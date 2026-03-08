@@ -40,6 +40,11 @@ impl SemanticParserPlugin for JsonParserPlugin {
             let entity_content = lines[entry.start_line - 1..end_line]
                 .join("\n");
 
+            // Compute a structural_hash over just the value (excluding the key name)
+            // so that rename detection works: "timeout": 30 → "request_timeout": 30
+            let value_content = extract_value_content(&entity_content);
+            let structural_hash = Some(content_hash(value_content));
+
             entities.push(SemanticEntity {
                 id: build_entity_id(file_path, &entry.entity_type, &entry.pointer, None),
                 file_path: file_path.to_string(),
@@ -47,7 +52,7 @@ impl SemanticParserPlugin for JsonParserPlugin {
                 name: entry.key.clone(),
                 parent_id: None,
                 content_hash: content_hash(&entity_content),
-                structural_hash: None,
+                structural_hash,
                 content: entity_content,
                 start_line: entry.start_line,
                 end_line,
@@ -180,6 +185,32 @@ fn find_top_level_entries(content: &str) -> Vec<JsonEntry> {
     entries
 }
 
+/// Extract just the value portion of a `"key": value` entity content string,
+/// stripping the key name so that renamed keys with identical values share the
+/// same structural_hash and are detected as renames rather than delete + add.
+fn extract_value_content(content: &str) -> &str {
+    let mut in_string = false;
+    let mut escape_next = false;
+    for (i, ch) in content.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape_next = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+        }
+        if ch == ':' && !in_string {
+            let rest = content[i + 1..].trim();
+            return rest.trim_end_matches(',').trim();
+        }
+    }
+    content
+}
+
 /// Find the line number (1-based) of the closing `}` of the root object.
 fn find_closing_brace_line(lines: &[&str]) -> usize {
     for (i, line) in lines.iter().enumerate().rev() {
@@ -242,5 +273,33 @@ mod tests {
         assert_eq!(entities[3].name, "description");
         assert_eq!(entities[3].start_line, 8);
         assert_eq!(entities[3].end_line, 8);
+    }
+
+    #[test]
+    fn test_renamed_scalar_property_shares_structural_hash() {
+        let before_content = "{\n  \"timeout\": 30\n}\n";
+        let after_content = "{\n  \"request_timeout\": 30\n}\n";
+        let plugin = JsonParserPlugin;
+        let before = plugin.extract_entities(before_content, "config.json");
+        let after = plugin.extract_entities(after_content, "config.json");
+        assert_eq!(before.len(), 1);
+        assert_eq!(after.len(), 1);
+        // content_hash differs (key name is part of content)
+        assert_ne!(before[0].content_hash, after[0].content_hash);
+        // structural_hash matches (same value)
+        assert_eq!(before[0].structural_hash, after[0].structural_hash);
+    }
+
+    #[test]
+    fn test_renamed_object_property_shares_structural_hash() {
+        let before_content = "{\n  \"config\": {\n    \"port\": 8080\n  }\n}\n";
+        let after_content = "{\n  \"settings\": {\n    \"port\": 8080\n  }\n}\n";
+        let plugin = JsonParserPlugin;
+        let before = plugin.extract_entities(before_content, "config.json");
+        let after = plugin.extract_entities(after_content, "config.json");
+        assert_eq!(before.len(), 1);
+        assert_eq!(after.len(), 1);
+        assert_ne!(before[0].content_hash, after[0].content_hash);
+        assert_eq!(before[0].structural_hash, after[0].structural_hash);
     }
 }
