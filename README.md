@@ -38,6 +38,21 @@ cargo install --path sem-cli
 
 Or grab a binary from [GitHub Releases](https://github.com/Ataraxy-Labs/sem/releases).
 
+Or build and run via Docker:
+
+```bash
+docker build -t sem .
+docker run --rm -t -v "$(pwd):/repo" -w /repo sem diff
+```
+
+For a native-feeling alias, add to your shell config:
+
+```bash
+alias sem='docker run --rm -t -v "$(pwd):/repo" -w /repo sem'
+```
+
+Then use `sem` as normal.
+
 ## Usage
 
 Works in any Git repo. No setup required. Also works outside Git for arbitrary file comparison.
