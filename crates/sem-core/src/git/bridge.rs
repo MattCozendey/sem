@@ -329,22 +329,36 @@ impl GitBridge {
         Ok(commit.tree()?)
     }
 
+    fn normalize_line_endings(s: String) -> String {
+        if s.contains('\r') {
+            s.replace("\r\n", "\n").replace('\r', "\n")
+        } else {
+            s
+        }
+    }
+
     fn read_blob_from_tree(&self, tree: &git2::Tree, file_path: &str) -> Option<String> {
         let entry = tree.get_path(Path::new(file_path)).ok()?;
         let blob = self.repo.find_blob(entry.id()).ok()?;
-        std::str::from_utf8(blob.content()).ok().map(String::from)
+        std::str::from_utf8(blob.content())
+            .ok()
+            .map(|s| Self::normalize_line_endings(s.to_string()))
     }
 
     fn read_working_file(&self, file_path: &str) -> Option<String> {
         let full_path = self.repo_root.join(file_path);
-        fs::read_to_string(full_path).ok()
+        fs::read_to_string(full_path)
+            .ok()
+            .map(Self::normalize_line_endings)
     }
 
     fn read_index_file(&self, file_path: &str) -> Option<String> {
         let index = self.repo.index().ok()?;
         let entry = index.get_path(Path::new(file_path), 0)?;
         let blob = self.repo.find_blob(entry.id).ok()?;
-        std::str::from_utf8(blob.content()).ok().map(String::from)
+        std::str::from_utf8(blob.content())
+            .ok()
+            .map(|s| Self::normalize_line_endings(s.to_string()))
     }
 
 
@@ -445,5 +459,42 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].file_path, "sample.ts");
         assert_eq!(files[0].status, FileStatus::Modified);
+    }
+
+    #[test]
+    fn crlf_only_difference_in_working_file_is_invisible() {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+
+        commit_file(&repo, "sample.rs", "fn a() {}\n", "init");
+        fs::write(temp.path().join("sample.rs"), "fn a() {}\r\n").unwrap();
+
+        let bridge = GitBridge::open(temp.path()).unwrap();
+        let files = bridge.get_changed_files(&DiffScope::Working).unwrap();
+
+        assert_eq!(files.len(), 1, "expected git to detect the CRLF change as modified");
+
+        let before = files[0].before_content.as_deref().unwrap();
+        let after = files[0].after_content.as_deref().unwrap();
+
+        assert_eq!(before, after, "CRLF-only difference should be invisible after normalization");
+    }
+
+    #[test]
+    fn crlf_stored_in_blob_is_normalized_on_read() {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+
+        repo.config().unwrap().set_str("core.autocrlf", "false").unwrap();
+        commit_file(&repo, "sample.rs", "fn a() {}\r\n", "init");
+        fs::write(temp.path().join("sample.rs"), "fn a() {}\r\nfn b() {}\r\n").unwrap();
+
+        let bridge = GitBridge::open(temp.path()).unwrap();
+        let files = bridge.get_changed_files(&DiffScope::Working).unwrap();
+
+        assert_eq!(files.len(), 1, "expected git to detect the modification");
+
+        let before = files[0].before_content.as_deref().unwrap();
+        assert!(!before.contains('\r'), "before_content read from CRLF blob should be normalized to LF");
     }
 }
