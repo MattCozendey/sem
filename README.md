@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  Entity-level diffs on top of Git. Instead of <em>line 43 changed</em>, sem tells you <em>function validateToken was added in src/auth.ts</em>.
+  Instead of lines changed, sem tells you what entities changed: functions, methods, classes.
 </p>
 
 <p align="center">
