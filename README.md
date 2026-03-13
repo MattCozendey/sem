@@ -38,7 +38,11 @@ Summary: 1 added, 1 modified, 1 deleted across 2 files
 
 ## Install
 
-Build from source (requires Rust):
+```bash
+brew install sem-cli
+```
+
+Or build from source (requires Rust):
 
 ```bash
 git clone https://github.com/Ataraxy-Labs/sem
@@ -48,20 +52,12 @@ cargo install --path sem-cli
 
 Or grab a binary from [GitHub Releases](https://github.com/Ataraxy-Labs/sem/releases).
 
-Or build and run via Docker:
+Or run via Docker:
 
 ```bash
 docker build -t sem .
 docker run --rm -it -u "$(id -u):$(id -g)" -v "$(pwd):/repo" sem diff
 ```
-
-For a native-feeling alias, add to your shell config:
-
-```bash
-alias sem='docker run --rm -it -u "$(id -u):$(id -g)" -v "$(pwd):/repo" sem'
-```
-
-Then use `sem` as normal.
 
 ## Usage
 
