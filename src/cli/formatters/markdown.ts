@@ -8,7 +8,14 @@ const SYMBOLS = {
   moved: '→',
   renamed: '↻',
 };
-
+const SYMBOLS = {
+  added: '+',
+  modified: 'Δ',
+  modified_cosmetic: '~',
+  deleted: '-',
+  moved: '→',
+  renamed: '↻',
+};
 export function formatMarkdown(result: DiffResult): string {
   if (result.changes.length === 0) {
     return 'No semantic changes detected.';
