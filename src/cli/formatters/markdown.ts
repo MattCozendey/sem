@@ -1,14 +1,7 @@
 import type { DiffResult } from '../../parser/differ.js';
 import type { SemanticChange } from '../../model/change.js';
 
-const SYMBOLS = {
-  added: '+',
-  modified: 'Δ',
-  deleted: '-',
-  moved: '→',
-  renamed: '↻',
-};
-const SYMBOLS = {
+const SYMBOLS: Record<string, string> = {
   added: '+',
   modified: 'Δ',
   modified_cosmetic: '~',

@@ -9,7 +9,7 @@ import { SemDatabase } from '../../storage/database.js';
 import { formatTerminal } from '../formatters/terminal.js';
 import { formatJson } from '../formatters/json.js';
 import { formatMarkdown } from '../formatters/markdown.js';
-  format?: 'terminal' | 'json' | 'markdown' | 'md';
+import { createDefaultRegistry } from '../../parser/plugins/index.js';
 import { loadConfig, validateChanges, formatValidationResults } from './validate.js';
 
 export interface DiffOptions {
