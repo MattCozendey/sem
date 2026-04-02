@@ -25,6 +25,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-14
             name: sem-darwin-arm64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            name: sem-windows-x86_64
 
     runs-on: ${{ matrix.os }}
     defaults:
@@ -55,16 +58,25 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} -p sem-cli
 
-      - name: Package
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../${{ matrix.name }}.tar.gz sem
           cd ../../..
 
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/sem.exe -DestinationPath ${{ matrix.name }}.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: crates/${{ matrix.name }}.tar.gz
+          path: |
+            crates/${{ matrix.name }}.tar.gz
+            crates/${{ matrix.name }}.zip
 
   release:
     needs: build
@@ -77,4 +89,6 @@ jobs:
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: "*.tar.gz"
+          files: |
+            *.tar.gz
+            *.zip

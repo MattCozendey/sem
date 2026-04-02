@@ -1,8 +1,10 @@
-name: Test Windows Build
+name: Windows
 
 on:
   push:
-    branches: [test-windows]
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
   build-windows:
