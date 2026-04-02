@@ -105,4 +105,24 @@ mod tests {
 
         assert_eq!(plugin.id(), "svelte");
     }
+
+    #[test]
+    fn test_registry_matches_typescript_module_suffix() {
+        let registry = create_default_registry();
+        let plugin = registry
+            .get_plugin("src/lib/index.mts")
+            .expect("plugin should exist");
+
+        assert_eq!(plugin.id(), "code");
+    }
+
+    #[test]
+    fn test_registry_matches_typescript_commonjs_suffix() {
+        let registry = create_default_registry();
+        let plugin = registry
+            .get_plugin("src/lib/index.cts")
+            .expect("plugin should exist");
+
+        assert_eq!(plugin.id(), "code");
+    }
 }
