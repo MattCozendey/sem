@@ -246,38 +246,22 @@ pub fn find_supported_files_public(root: &Path, registry: &sem_core::parser::reg
 
 fn find_supported_files(root: &Path, registry: &sem_core::parser::registry::ParserRegistry, ext_filter: &[String]) -> Vec<String> {
     let mut files = Vec::new();
-    walk_dir(root, root, registry, ext_filter, &mut files);
-    files.sort();
-    files
-}
 
-fn walk_dir(
-    dir: &Path,
-    root: &Path,
-    registry: &sem_core::parser::registry::ParserRegistry,
-    ext_filter: &[String],
-    files: &mut Vec<String>,
-) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
+    // Use the `ignore` crate to walk the filesystem respecting .gitignore
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(true)       // skip hidden files/dirs
+        .git_ignore(true)   // respect .gitignore
+        .git_global(true)   // respect global gitignore
+        .git_exclude(true)  // respect .git/info/exclude
+        .build();
 
-    for entry in entries.flatten() {
+    for entry in walker.flatten() {
         let path = entry.path();
-
-        // Skip hidden dirs and common non-code dirs
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "__pycache__" || name == "venv" {
-                continue;
-            }
+        if !path.is_file() {
+            continue;
         }
-
-        if path.is_dir() {
-            walk_dir(&path, root, registry, ext_filter, files);
-        } else if let Ok(rel) = path.strip_prefix(root) {
+        if let Ok(rel) = path.strip_prefix(root) {
             let rel_str = rel.to_string_lossy().to_string();
-            // If ext filter is set, only include matching extensions
             if !ext_filter.is_empty() && !ext_filter.iter().any(|ext| rel_str.ends_with(ext.as_str())) {
                 continue;
             }
@@ -286,4 +270,7 @@ fn walk_dir(
             }
         }
     }
+
+    files.sort();
+    files
 }

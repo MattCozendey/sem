@@ -20,6 +20,7 @@ clap = { version = "4", features = ["derive"] }
 colored = "2"
 similar = "2"
 git2 = "0.20"
+ignore = "0.4"
 openssl-sys = { version = "0.9", optional = true }
 serde_json = "1"
 
