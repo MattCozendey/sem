@@ -93,13 +93,84 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         wrapper_name(),
     );
 
+    // Install pre-commit hook if we're in a git repo
+    install_pre_commit_hook();
+
     println!(
         "\n{} Running `git diff` in any repo will now use sem.",
         "Done!".green().bold()
     );
-    println!("To revert, run: sem unsetup");
+    println!("  Pre-commit hook shows entity-level blast radius of staged changes.");
+    println!("  sem-mcp server available for agent integration.");
+    println!("  To revert, run: sem unsetup");
 
     Ok(())
+}
+
+const SEM_HOOK_START: &str = "# === sem pre-commit hook ===";
+const SEM_HOOK_END: &str = "# === end sem ===";
+
+fn pre_commit_hook_section() -> String {
+    format!(
+        "{}\n\
+         if command -v sem >/dev/null 2>&1; then\n\
+         \x20   sem diff --staged 2>/dev/null\n\
+         fi\n\
+         {}\n",
+        SEM_HOOK_START, SEM_HOOK_END
+    )
+}
+
+fn install_pre_commit_hook() {
+    // Best-effort: find .git/hooks in current directory
+    let git_dir = Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .output();
+
+    let git_dir = match git_dir {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+        _ => return, // Not in a git repo, skip
+    };
+
+    let hooks_dir = PathBuf::from(&git_dir).join("hooks");
+    if !hooks_dir.exists() {
+        let _ = fs::create_dir_all(&hooks_dir);
+    }
+
+    let hook_path = hooks_dir.join("pre-commit");
+
+    if hook_path.exists() {
+        // Append sem section if not already present
+        let existing = fs::read_to_string(&hook_path).unwrap_or_default();
+        if existing.contains(SEM_HOOK_START) {
+            println!(
+                "{} Pre-commit hook already has sem section",
+                "✓".green().bold()
+            );
+            return;
+        }
+        let updated = format!("{}\n{}", existing.trim_end(), pre_commit_hook_section());
+        if fs::write(&hook_path, updated).is_ok() {
+            let _ = set_executable(&hook_path);
+            println!(
+                "{} Appended sem section to existing pre-commit hook",
+                "✓".green().bold()
+            );
+        }
+    } else {
+        // Create new hook
+        let content = format!("#!/bin/sh\n{}\nexit 0\n", pre_commit_hook_section());
+        if fs::write(&hook_path, content).is_ok() {
+            let _ = set_executable(&hook_path);
+            println!(
+                "{} Created pre-commit hook at {}",
+                "✓".green().bold(),
+                hook_path.display()
+            );
+        }
+    }
 }
 
 pub fn unsetup() -> Result<(), Box<dyn std::error::Error>> {
@@ -130,10 +201,77 @@ pub fn unsetup() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Remove pre-commit hook section
+    remove_pre_commit_hook();
+
     println!(
         "\n{} git diff restored to default behavior.",
         "Done!".green().bold()
     );
 
     Ok(())
+}
+
+fn remove_pre_commit_hook() {
+    let git_dir = Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .output();
+
+    let git_dir = match git_dir {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+        _ => return,
+    };
+
+    let hook_path = PathBuf::from(&git_dir).join("hooks").join("pre-commit");
+    if !hook_path.exists() {
+        return;
+    }
+
+    let content = match fs::read_to_string(&hook_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    if !content.contains(SEM_HOOK_START) {
+        return;
+    }
+
+    // Remove the sem section
+    let lines: Vec<&str> = content.lines().collect();
+    let mut new_lines = Vec::new();
+    let mut in_sem_section = false;
+
+    for line in &lines {
+        if line.contains(SEM_HOOK_START) {
+            in_sem_section = true;
+            continue;
+        }
+        if line.contains(SEM_HOOK_END) {
+            in_sem_section = false;
+            continue;
+        }
+        if !in_sem_section {
+            new_lines.push(*line);
+        }
+    }
+
+    let result = new_lines.join("\n");
+    let trimmed = result.trim();
+
+    // If only shebang + exit 0 remain, remove the hook entirely
+    if trimmed == "#!/bin/sh\nexit 0" || trimmed == "#!/bin/sh" || trimmed.is_empty() {
+        let _ = fs::remove_file(&hook_path);
+        println!(
+            "{} Removed sem-only pre-commit hook",
+            "✓".green().bold()
+        );
+    } else {
+        let _ = fs::write(&hook_path, format!("{}\n", result.trim_end()));
+        println!(
+            "{} Removed sem section from pre-commit hook",
+            "✓".green().bold()
+        );
+    }
 }

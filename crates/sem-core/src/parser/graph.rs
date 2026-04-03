@@ -12,14 +12,14 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::git::types::{FileChange, FileStatus};
 use crate::model::entity::SemanticEntity;
 use crate::parser::registry::ParserRegistry;
 
 /// A reference from one entity to another.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntityRef {
     pub from_entity: String,
@@ -28,7 +28,7 @@ pub struct EntityRef {
 }
 
 /// Type of reference between entities.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RefType {
     /// Function/method call
@@ -53,7 +53,7 @@ pub struct EntityGraph {
 }
 
 /// Minimal entity info stored in the graph.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntityInfo {
     pub id: String,
@@ -65,6 +65,28 @@ pub struct EntityInfo {
 }
 
 impl EntityGraph {
+    /// Reconstruct an EntityGraph from pre-loaded parts (e.g. from a cache).
+    pub fn from_parts(entities: HashMap<String, EntityInfo>, edges: Vec<EntityRef>) -> Self {
+        let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
+        let mut dependencies: HashMap<String, Vec<String>> = HashMap::new();
+        for edge in &edges {
+            dependents
+                .entry(edge.to_entity.clone())
+                .or_default()
+                .push(edge.from_entity.clone());
+            dependencies
+                .entry(edge.from_entity.clone())
+                .or_default()
+                .push(edge.to_entity.clone());
+        }
+        EntityGraph {
+            entities,
+            edges,
+            dependents,
+            dependencies,
+        }
+    }
+
     /// Build an entity graph from a set of files.
     ///
     /// Pass 1: Extract all entities from all files using the parser registry.
@@ -273,6 +295,33 @@ impl EntityGraph {
         }
 
         count
+    }
+
+    /// Filter entities to those that look like tests.
+    /// Uses name heuristics, file path patterns, and content patterns.
+    pub fn filter_test_entities(&self, entities: &[crate::model::entity::SemanticEntity]) -> HashSet<String> {
+        let mut test_ids = HashSet::new();
+        for entity in entities {
+            if is_test_entity(entity) {
+                test_ids.insert(entity.id.clone());
+            }
+        }
+        test_ids
+    }
+
+    /// Impact analysis filtered to test entities only.
+    /// Returns transitive dependents that are test functions/methods.
+    pub fn test_impact(
+        &self,
+        entity_id: &str,
+        all_entities: &[crate::model::entity::SemanticEntity],
+    ) -> Vec<&EntityInfo> {
+        let test_ids = self.filter_test_entities(all_entities);
+        let impact = self.impact_analysis(entity_id);
+        impact
+            .into_iter()
+            .filter(|info| test_ids.contains(&info.id))
+            .collect()
     }
 
     /// Incrementally update the graph from a set of changed files.
@@ -508,6 +557,43 @@ impl EntityGraph {
             }
         }
     }
+}
+
+/// Check if an entity looks like a test based on name, file path, and content patterns.
+fn is_test_entity(entity: &crate::model::entity::SemanticEntity) -> bool {
+    let name = &entity.name;
+    let path = &entity.file_path;
+    let content = &entity.content;
+
+    // Name patterns
+    if name.starts_with("test_") || name.starts_with("Test") || name.ends_with("_test") || name.ends_with("Test") {
+        return true;
+    }
+    if name.starts_with("it_") || name.starts_with("describe_") || name.starts_with("spec_") {
+        return true;
+    }
+
+    // File path patterns
+    let path_lower = path.to_lowercase();
+    let in_test_file = path_lower.contains("/test/")
+        || path_lower.contains("/tests/")
+        || path_lower.contains("/spec/")
+        || path_lower.contains("_test.")
+        || path_lower.contains(".test.")
+        || path_lower.contains("_spec.")
+        || path_lower.contains(".spec.");
+
+    // Content patterns (test annotations/decorators)
+    let has_test_marker = content.contains("#[test]")
+        || content.contains("#[cfg(test)]")
+        || content.contains("@Test")
+        || content.contains("@pytest")
+        || content.contains("@test")
+        || content.contains("describe(")
+        || content.contains("it(")
+        || content.contains("test(");
+
+    in_test_file && has_test_marker
 }
 
 /// Extract identifier references from entity content using simple token analysis.
