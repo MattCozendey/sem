@@ -4,6 +4,32 @@ use sem_core::parser::differ::DiffResult;
 use similar::{ChangeTag, TextDiff};
 use std::collections::BTreeMap;
 
+/// Runs word-level diff on two lines and returns (delete_line, insert_line)
+/// with changed words highlighted (strikethrough+red / bold+green).
+fn render_inline_diff(old_line: &str, new_line: &str) -> (String, String) {
+    let diff = TextDiff::from_words(old_line, new_line);
+    let mut del = String::new();
+    let mut ins = String::new();
+
+    for change in diff.iter_all_changes() {
+        let val = change.value();
+        match change.tag() {
+            ChangeTag::Equal => {
+                del.push_str(&val.red().to_string());
+                ins.push_str(&val.green().to_string());
+            }
+            ChangeTag::Delete => {
+                del.push_str(&val.red().strikethrough().bold().to_string());
+            }
+            ChangeTag::Insert => {
+                ins.push_str(&val.green().bold().to_string());
+            }
+        }
+    }
+
+    (del, ins)
+}
+
 pub fn format_terminal(result: &DiffResult, verbose: bool) -> String {
     if result.changes.is_empty() {
         return "No semantic changes detected.".dimmed().to_string();
@@ -107,26 +133,54 @@ pub fn format_terminal(result: &DiffResult, verbose: bool) -> String {
                                     format!("{}", hunk.header()).dimmed(),
                                 ));
                                 for op in hunk.ops() {
+                                    let mut deletes: Vec<String> = Vec::new();
+                                    let mut inserts: Vec<String> = Vec::new();
+
                                     for diff_change in diff.iter_changes(op) {
                                         let line = diff_change.value().trim_end_matches('\n');
-                                        let formatted = match diff_change.tag() {
-                                            ChangeTag::Delete => format!(
-                                                "{}    {}",
-                                                "│".dimmed(),
-                                                format!("- {line}").red(),
-                                            ),
-                                            ChangeTag::Insert => format!(
-                                                "{}    {}",
-                                                "│".dimmed(),
-                                                format!("+ {line}").green(),
-                                            ),
-                                            ChangeTag::Equal => format!(
-                                                "{}    {}",
-                                                "│".dimmed(),
-                                                format!("  {line}").dimmed(),
-                                            ),
-                                        };
-                                        lines.push(formatted);
+                                        match diff_change.tag() {
+                                            ChangeTag::Delete => deletes.push(line.to_string()),
+                                            ChangeTag::Insert => inserts.push(line.to_string()),
+                                            ChangeTag::Equal => {
+                                                lines.push(format!(
+                                                    "{}    {}",
+                                                    "│".dimmed(),
+                                                    format!("  {line}").dimmed(),
+                                                ));
+                                            }
+                                        }
+                                    }
+
+                                    let paired = deletes.len().min(inserts.len());
+                                    for i in 0..paired {
+                                        let (del, ins) =
+                                            render_inline_diff(&deletes[i], &inserts[i]);
+                                        lines.push(format!(
+                                            "{}    {} {}",
+                                            "│".dimmed(),
+                                            "-".red(),
+                                            del,
+                                        ));
+                                        lines.push(format!(
+                                            "{}    {} {}",
+                                            "│".dimmed(),
+                                            "+".green(),
+                                            ins,
+                                        ));
+                                    }
+                                    for d in &deletes[paired..] {
+                                        lines.push(format!(
+                                            "{}    {}",
+                                            "│".dimmed(),
+                                            format!("- {d}").red(),
+                                        ));
+                                    }
+                                    for i in &inserts[paired..] {
+                                        lines.push(format!(
+                                            "{}    {}",
+                                            "│".dimmed(),
+                                            format!("+ {i}").green(),
+                                        ));
                                     }
                                 }
                             }
