@@ -364,6 +364,37 @@ export class Greeter {
     }
 
     #[test]
+    fn test_module_typescript_entity_extraction() {
+        let code = r#"
+export function hello(): string {
+    return "hello";
+}
+"#;
+        let plugin = CodeParserPlugin;
+        let entities = plugin.extract_entities(code, "test.mts");
+        let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();
+
+        assert!(names.contains(&"hello"), "Should find hello function");
+    }
+
+    #[test]
+    fn test_commonjs_typescript_entity_extraction() {
+        let code = r#"
+export class Greeter {
+    greet(name: string): string {
+        return `Hello, ${name}!`;
+    }
+}
+"#;
+        let plugin = CodeParserPlugin;
+        let entities = plugin.extract_entities(code, "test.cts");
+        let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();
+
+        assert!(names.contains(&"Greeter"), "Should find Greeter class");
+        assert!(names.contains(&"greet"), "Should find greet method");
+    }
+
+    #[test]
     fn test_nested_functions_typescript() {
         let code = r#"
 function outer() {
