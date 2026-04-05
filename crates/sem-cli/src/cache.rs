@@ -211,6 +211,7 @@ impl DiskCache {
                         file_path: e.file_path.clone(),
                         start_line: e.start_line,
                         end_line: e.end_line,
+                        parent_id: e.parent_id.clone(),
                     },
                 )
             })

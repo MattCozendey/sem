@@ -60,6 +60,8 @@ pub struct EntityInfo {
     pub name: String,
     pub entity_type: String,
     pub file_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     pub start_line: usize,
     pub end_line: usize,
 }
@@ -126,11 +128,32 @@ impl EntityGraph {
                     name: entity.name.clone(),
                     entity_type: entity.entity_type.clone(),
                     file_path: entity.file_path.clone(),
+                    parent_id: entity.parent_id.clone(),
                     start_line: entity.start_line,
                     end_line: entity.end_line,
                 },
             );
         }
+
+        // Build parent-child set for skipping class→method self-edges
+        let parent_child_pairs: HashSet<(&str, &str)> = all_entities
+            .iter()
+            .filter_map(|e| {
+                e.parent_id.as_ref().map(|pid| (pid.as_str(), e.id.as_str()))
+            })
+            .collect();
+
+        // Build set of (class_id, child_method_name) so classes skip refs to their own methods
+        let class_child_names: HashSet<(&str, &str)> = all_entities
+            .iter()
+            .filter_map(|e| {
+                e.parent_id.as_ref().map(|pid| (pid.as_str(), e.name.as_str()))
+            })
+            .collect();
+
+        // Build import table: (file_path, imported_name) → target entity ID
+        // e.g. ("io_handler.py", "validate") → "core.py::function::validate"
+        let import_table = build_import_table(root, file_paths, &symbol_table, &entity_map);
 
         // Pass 2: Extract references in parallel, then resolve against symbol table
         // Step 2a: Parallel reference extraction per entity
@@ -140,7 +163,32 @@ impl EntityGraph {
                 let refs = extract_references_from_content(&entity.content, &entity.name);
                 let mut entity_edges = Vec::new();
                 for ref_name in refs {
+                    // Skip references to names that are this class's own methods
+                    if class_child_names.contains(&(entity.id.as_str(), ref_name)) {
+                        continue;
+                    }
+
+                    // Check import table first: if this file imports this name,
+                    // resolve to the import target instead of global symbol table
+                    let import_key = (entity.file_path.clone(), ref_name.to_string());
+                    if let Some(import_target_id) = import_table.get(&import_key) {
+                        if import_target_id != &entity.id
+                            && !parent_child_pairs.contains(&(entity.id.as_str(), import_target_id.as_str()))
+                            && !parent_child_pairs.contains(&(import_target_id.as_str(), entity.id.as_str()))
+                        {
+                            let ref_type = infer_ref_type(&entity.content, &ref_name);
+                            entity_edges.push((
+                                entity.id.clone(),
+                                import_target_id.clone(),
+                                ref_type,
+                            ));
+                        }
+                        continue;
+                    }
+
                     if let Some(target_ids) = symbol_table.get(ref_name) {
+                        // Without an import, only resolve to entities in the same file.
+                        // Cross-file resolution is handled by the import table above.
                         let target = target_ids
                             .iter()
                             .find(|id| {
@@ -148,10 +196,15 @@ impl EntityGraph {
                                     && entity_map
                                         .get(*id)
                                         .map_or(false, |e| e.file_path == entity.file_path)
-                            })
-                            .or_else(|| target_ids.iter().find(|id| *id != &entity.id));
+                            });
 
                         if let Some(target_id) = target {
+                            // Skip parent-child edges (class → own method)
+                            if parent_child_pairs.contains(&(entity.id.as_str(), target_id.as_str()))
+                                || parent_child_pairs.contains(&(target_id.as_str(), entity.id.as_str()))
+                            {
+                                continue;
+                            }
                             let ref_type = infer_ref_type(&entity.content, &ref_name);
                             entity_edges.push((
                                 entity.id.clone(),
@@ -393,6 +446,7 @@ impl EntityGraph {
                     name: entity.name.clone(),
                     entity_type: entity.entity_type.clone(),
                     file_path: entity.file_path.clone(),
+                    parent_id: entity.parent_id.clone(),
                     start_line: entity.start_line,
                     end_line: entity.end_line,
                 },
@@ -596,9 +650,210 @@ fn is_test_entity(entity: &crate::model::entity::SemanticEntity) -> bool {
     in_test_file && has_test_marker
 }
 
+/// Build import table: maps (file_path, imported_name) → target entity ID.
+///
+/// Parses `from X import Y` / `import X` / `use X` style statements from entity content
+/// and resolves Y to the entity it refers to in the symbol table.
+fn build_import_table(
+    root: &Path,
+    file_paths: &[String],
+    symbol_table: &HashMap<String, Vec<String>>,
+    entity_map: &HashMap<String, EntityInfo>,
+) -> HashMap<(String, String), String> {
+    let mut import_table: HashMap<(String, String), String> = HashMap::new();
+
+    for file_path in file_paths {
+        let full_path = root.join(file_path);
+        let content = match std::fs::read_to_string(&full_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Join multi-line imports into single logical lines
+        // e.g. "from .cookies import (\n    foo,\n    bar,\n)" -> "from .cookies import foo, bar"
+        let mut logical_lines: Vec<String> = Vec::new();
+        let mut current_line = String::new();
+        let mut in_parens = false;
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if in_parens {
+                // Strip parentheses and comments
+                let clean = trimmed.trim_end_matches(|c: char| c == ')' || c == ',');
+                let clean = clean.split('#').next().unwrap_or(clean).trim();
+                if !clean.is_empty() && clean != "(" {
+                    current_line.push_str(", ");
+                    current_line.push_str(clean);
+                }
+                if trimmed.contains(')') {
+                    in_parens = false;
+                    logical_lines.push(std::mem::take(&mut current_line));
+                }
+            } else if trimmed.starts_with("from ") && trimmed.contains(" import ") {
+                if trimmed.contains('(') && !trimmed.contains(')') {
+                    // Multi-line import starts
+                    in_parens = true;
+                    // Take everything before the paren
+                    let before_paren = trimmed.split('(').next().unwrap_or(trimmed);
+                    current_line = before_paren.trim().to_string();
+                    // Also grab anything after the paren on this line
+                    if let Some(after) = trimmed.split('(').nth(1) {
+                        let after = after.trim().trim_end_matches(')').trim();
+                        if !after.is_empty() {
+                            current_line.push(' ');
+                            current_line.push_str(after);
+                        }
+                    }
+                } else {
+                    logical_lines.push(trimmed.to_string());
+                }
+            }
+        }
+
+        for logical_line in &logical_lines {
+            if let Some(rest) = logical_line.strip_prefix("from ") {
+                // Find " import " or " import," (multi-line imports join with comma)
+                let import_match = rest.find(" import ")
+                    .map(|pos| (pos, 8))
+                    .or_else(|| rest.find(" import,").map(|pos| (pos, 8)));
+                if let Some((import_pos, skip)) = import_match {
+                    let module_path = &rest[..import_pos];
+                    let names_str = &rest[import_pos + skip..];
+
+                    let source_module = module_path
+                        .trim_start_matches('.')
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(module_path.trim_start_matches('.'));
+
+                    for name_part in names_str.split(',') {
+                        let name_part = name_part.trim();
+                        let imported_name = name_part.split_whitespace().next().unwrap_or(name_part);
+                        // Strip trailing parens/punctuation
+                        let imported_name = imported_name.trim_matches(|c: char| c == '(' || c == ')' || c == ',');
+                        if imported_name.is_empty() {
+                            continue;
+                        }
+
+                        if let Some(target_ids) = symbol_table.get(imported_name) {
+                            let target = target_ids.iter().find(|id| {
+                                entity_map.get(*id).map_or(false, |e| {
+                                    let stem = e.file_path.rsplit('/').next().unwrap_or(&e.file_path);
+                                    let stem = stem.strip_suffix(".py")
+                                        .or_else(|| stem.strip_suffix(".ts"))
+                                        .or_else(|| stem.strip_suffix(".js"))
+                                        .or_else(|| stem.strip_suffix(".rs"))
+                                        .unwrap_or(stem);
+                                    stem == source_module
+                                })
+                            });
+                            if let Some(target_id) = target {
+                                import_table.insert(
+                                    (file_path.clone(), imported_name.to_string()),
+                                    target_id.clone(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    import_table
+}
+
+/// Strip comments and string literals from content to avoid false references.
+/// Returns a new string with comments/docstrings replaced by spaces.
+fn strip_comments_and_strings(content: &str) -> String {
+    let bytes = content.as_bytes();
+    let len = bytes.len();
+    let mut result = vec![b' '; len];
+    let mut i = 0;
+
+    while i < len {
+        // Triple-quoted strings (Python docstrings)
+        if i + 2 < len && bytes[i] == b'"' && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+            i += 3;
+            while i + 2 < len {
+                if bytes[i] == b'"' && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+                    i += 3;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if i + 2 < len && bytes[i] == b'\'' && bytes[i + 1] == b'\'' && bytes[i + 2] == b'\'' {
+            i += 3;
+            while i + 2 < len {
+                if bytes[i] == b'\'' && bytes[i + 1] == b'\'' && bytes[i + 2] == b'\'' {
+                    i += 3;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        // Double-quoted strings
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' { i += 2; continue; }
+                if bytes[i] == b'"' { i += 1; break; }
+                i += 1;
+            }
+            continue;
+        }
+        // Single-quoted strings
+        if bytes[i] == b'\'' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' { i += 2; continue; }
+                if bytes[i] == b'\'' { i += 1; break; }
+                i += 1;
+            }
+            continue;
+        }
+        // Python/Ruby single-line comments
+        if bytes[i] == b'#' {
+            while i < len && bytes[i] != b'\n' { i += 1; }
+            continue;
+        }
+        // C-style single-line comments
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' { i += 1; }
+            continue;
+        }
+        // C-style block comments
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' { i += 2; break; }
+                i += 1;
+            }
+            continue;
+        }
+        // Regular code: copy through
+        result[i] = bytes[i];
+        i += 1;
+    }
+
+    String::from_utf8_lossy(&result).into_owned()
+}
+
 /// Extract identifier references from entity content using simple token analysis.
-/// Returns borrowed slices from the content to avoid allocations.
+/// Strips comments and strings first to avoid false positives from docstrings.
+/// Returns borrowed slices from the stripped content.
 fn extract_references_from_content<'a>(content: &'a str, own_name: &str) -> Vec<&'a str> {
+    // We need to figure out which words appear only in comments/strings vs real code.
+    // Strategy: strip comments/strings, then only accept words that appear in the stripped version.
+    let stripped = strip_comments_and_strings(content);
+    let stripped_words: HashSet<&str> = stripped
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .collect();
+
     let mut refs = Vec::new();
     let mut seen: HashSet<&str> = HashSet::new();
 
@@ -618,6 +873,10 @@ fn extract_references_from_content<'a>(content: &'a str, own_name: &str) -> Vec<
         }
         // Skip common local variable names that create false graph edges
         if is_common_local_name(word) {
+            continue;
+        }
+        // Skip words that only appear in comments/strings
+        if !stripped_words.contains(word) {
             continue;
         }
         if seen.insert(word) {
