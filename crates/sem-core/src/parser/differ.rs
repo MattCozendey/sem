@@ -58,7 +58,7 @@ pub fn compute_semantic_diff(
                           b: &crate::model::entity::SemanticEntity|
              -> f64 { plugin.compute_similarity(a, b) };
 
-            let result = match_entities(
+            let mut result = match_entities(
                 &before_entities,
                 &after_entities,
                 &file.file_path,
@@ -66,6 +66,7 @@ pub fn compute_semantic_diff(
                 commit_sha,
                 author,
             );
+            result.changes.sort_by_key(|change| change.entity_line);
 
             if result.changes.is_empty() {
                 None
