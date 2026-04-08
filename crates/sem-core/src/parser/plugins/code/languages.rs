@@ -236,7 +236,7 @@ static JAVASCRIPT_CONFIG: LanguageConfig = LanguageConfig {
 
 static PYTHON_CONFIG: LanguageConfig = LanguageConfig {
     id: "python",
-    extensions: &[".py"],
+    extensions: &[".py", ".pyi"],
     entity_node_types: &[
         "function_definition",
         "class_definition",
@@ -607,7 +607,7 @@ pub fn get_language_config(extension: &str) -> Option<&'static LanguageConfig> {
 pub fn get_all_code_extensions() -> &'static [&'static str] {
     // All unique extensions across all language configs
     static EXTENSIONS: &[&str] = &[
-        ".ts",".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".c", ".h",
+        ".ts",".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".py", ".pyi", ".go", ".rs", ".java", ".c", ".h",
         ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".rb", ".cs", ".php", ".f90", ".f95", ".f03",
         ".f08", ".f", ".for", ".swift", ".ex", ".exs", ".sh", ".hcl", ".tf", ".tfvars",
         ".kt", ".kts",
