@@ -10,6 +10,7 @@ use commands::blame::{blame_command, BlameOptions};
 use commands::context::{context_command, ContextOptions};
 use commands::diff::{diff_command, DiffOptions, OutputFormat};
 use commands::entities::{entities_command, EntitiesOptions};
+use commands::grep::{grep_command, GrepOptions, RefKind};
 use commands::impact::{impact_command, ImpactMode, ImpactOptions};
 use commands::log::{log_command, LogOptions};
 
@@ -158,6 +159,60 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+    /// Search semantic entities across the repo
+    Grep {
+        /// Entity name pattern
+        #[arg()]
+        pattern: Option<String>,
+
+        /// Also search inside entity content
+        #[arg(long, short = 'c')]
+        content: bool,
+
+        /// Match text filters case-insensitively
+        #[arg(long, short = 'i')]
+        ignore_case: bool,
+
+        /// Only include these entity types (e.g. --type function --type class)
+        #[arg(long = "type", num_args = 1..)]
+        entity_types: Vec<String>,
+
+        /// Only include entities whose file path contains this substring
+        #[arg(long)]
+        path: Option<String>,
+
+        /// Only include entities that look like tests
+        #[arg(long)]
+        tests: bool,
+
+        /// Only include entities that directly depend on a matching entity name
+        #[arg(long, num_args = 1..)]
+        depends_on: Vec<String>,
+
+        /// Restrict --depends-on matches to a specific reference kind
+        #[arg(long, value_enum)]
+        ref_kind: Option<RefKind>,
+
+        /// Only include entities with at least this many direct dependencies
+        #[arg(long)]
+        min_dependencies: Option<usize>,
+
+        /// Only include entities with at least this many direct dependents
+        #[arg(long)]
+        min_dependents: Option<usize>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Only include files with these extensions (e.g. --file-exts .py .rs)
+        #[arg(long, num_args = 1..)]
+        file_exts: Vec<String>,
+
+        /// Skip the SQLite entity cache (rebuild from scratch)
+        #[arg(long)]
+        no_cache: bool,
     },
     /// Show token-budgeted context for an entity
     Context {
@@ -322,6 +377,41 @@ fn main() {
                     .to_string(),
                 file_path: file,
                 json,
+            });
+        }
+        Some(Commands::Grep {
+            pattern,
+            content,
+            ignore_case,
+            entity_types,
+            path,
+            tests,
+            depends_on,
+            ref_kind,
+            min_dependencies,
+            min_dependents,
+            json,
+            file_exts,
+            no_cache,
+        }) => {
+            grep_command(GrepOptions {
+                cwd: std::env::current_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+                pattern,
+                content,
+                ignore_case,
+                entity_types,
+                path_substring: path,
+                tests,
+                depends_on,
+                ref_kind,
+                min_dependencies,
+                min_dependents,
+                json,
+                file_exts,
+                no_cache,
             });
         }
         Some(Commands::Context {
