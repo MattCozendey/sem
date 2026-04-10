@@ -110,6 +110,7 @@ jobs:
         shell: pwsh
         run: |
           Compress-Archive -Path target/${{ matrix.target }}/release/sem.exe -DestinationPath ${{ matrix.name }}.zip
+          tar -czf ${{ matrix.name }}.tar.gz -C target/${{ matrix.target }}/release sem.exe
 
       - uses: actions/upload-artifact@v4
         with:
@@ -133,6 +134,32 @@ jobs:
           files: |
             *.tar.gz
             *.zip
+
+  publish-npm:
+    needs: [check-version, release]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Sync npm package version
+        run: node ./scripts/sync-package-version.mjs "${{ needs.check-version.outputs.version }}"
+
+      - name: Check npm package contents
+        run: npm pack --dry-run
+
+      - name: Publish npm package
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-crates:
     needs: [check-version, create-tag]

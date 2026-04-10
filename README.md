@@ -37,6 +37,19 @@ It works in any Git repo with no setup.
 brew install sem-cli
 ```
 
+Or install the npm wrapper into `node_modules`:
+
+```bash
+npm install --save-dev @ataraxy-labs/sem
+```
+
+With Bun, trust the package so its `postinstall` script can download the binary:
+
+```bash
+bun add -d @ataraxy-labs/sem
+bun pm trust @ataraxy-labs/sem
+```
+
 Or build from source (requires Rust):
 
 ```bash

@@ -2,6 +2,9 @@ target/
 .sem/
 *.db
 .DS_Store
+node_modules/
+.npm-cache/
+vendor/
 
 # Nixos artifacts
 .envrc
