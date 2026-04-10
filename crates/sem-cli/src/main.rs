@@ -72,7 +72,7 @@ enum Commands {
         profile: bool,
 
         /// Only include files with these extensions (e.g. --file-exts .py .rs)
-        #[arg(long)]
+        #[arg(long, num_args = 1..)]
         file_exts: Vec<String>,
 
         /// When to use colors: always, auto, never
@@ -106,7 +106,7 @@ enum Commands {
         json: bool,
 
         /// Only include files with these extensions (e.g. --file-exts .py .rs)
-        #[arg(long)]
+        #[arg(long, num_args = 1..)]
         file_exts: Vec<String>,
 
         /// Skip the SQLite entity cache (rebuild from scratch)
@@ -174,7 +174,7 @@ enum Commands {
         json: bool,
 
         /// Only include files with these extensions (e.g. --file-exts .py .rs)
-        #[arg(long)]
+        #[arg(long, num_args = 1..)]
         file_exts: Vec<String>,
 
         /// Skip the SQLite entity cache (rebuild from scratch)
