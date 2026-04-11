@@ -45,6 +45,38 @@ pub struct LogParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GrepParams {
+    #[schemars(description = "Entity name pattern. If omitted, provide at least one filter.")]
+    pub pattern: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Also search inside entity content. Requires pattern.")]
+    pub content: bool,
+    #[serde(default)]
+    #[schemars(description = "Match text filters literally, including case and identifier separators.")]
+    pub case_sensitive: bool,
+    #[serde(default, alias = "types", alias = "type")]
+    #[schemars(description = "Only include these entity types, such as function or class.")]
+    pub entity_types: Vec<String>,
+    #[schemars(description = "Only include entities whose file path contains this substring.")]
+    pub path: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Only include entities that look like tests.")]
+    pub tests: bool,
+    #[serde(default)]
+    #[schemars(description = "Only include entities that directly depend on a matching entity name.")]
+    pub depends_on: Vec<String>,
+    #[schemars(description = "Restrict depends_on matches to one reference kind: calls, imports, or type.")]
+    pub ref_kind: Option<String>,
+    #[schemars(description = "Only include entities with at least this many direct dependencies.")]
+    pub min_dependencies: Option<usize>,
+    #[schemars(description = "Only include entities with at least this many direct dependents.")]
+    pub min_dependents: Option<usize>,
+    #[serde(default)]
+    #[schemars(description = "Only include files with these extensions, such as .py or .rs.")]
+    pub file_exts: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ContextParams {
     #[schemars(description = "Path to the file containing the entity")]
     pub file_path: String,

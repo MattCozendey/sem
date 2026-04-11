@@ -13,9 +13,11 @@ use sem_core::git::bridge::GitBridge;
 use sem_core::git::types::DiffScope;
 use sem_core::model::entity::SemanticEntity;
 use sem_core::parser::differ::compute_semantic_diff;
+use sem_core::parser::grep::{find_matches, result_json, GrepQuery, GrepRefKind};
 use sem_core::parser::graph::EntityGraph;
 use sem_core::parser::plugins::create_default_registry;
 use sem_core::parser::registry::ParserRegistry;
+use sem_core::utils::paths::normalize_file_exts;
 use tokio::sync::Mutex;
 
 use crate::cache;
@@ -62,6 +64,9 @@ impl SemServer {
                 if let Ok(bridge) = GitBridge::open(search_dir) {
                     return Ok(bridge.repo_root().to_path_buf());
                 }
+                if let Some(root) = Self::find_git_root(search_dir) {
+                    return Ok(root);
+                }
             }
         }
 
@@ -78,6 +83,9 @@ impl SemServer {
             if let Ok(bridge) = GitBridge::open(&cwd) {
                 return Ok(bridge.repo_root().to_path_buf());
             }
+            if let Some(root) = Self::find_git_root(&cwd) {
+                return Ok(root);
+            }
         }
 
         Err(
@@ -87,6 +95,18 @@ impl SemServer {
              - Run sem-mcp from within a git repo"
                 .to_string(),
         )
+    }
+
+    fn find_git_root(start: &Path) -> Option<PathBuf> {
+        let mut dir = start.to_path_buf();
+        loop {
+            if dir.join(".git").exists() {
+                return Some(dir);
+            }
+            if !dir.pop() {
+                return None;
+            }
+        }
     }
 
     fn resolve_file_path(repo_root: &Path, file_path: &str) -> (String, PathBuf) {
@@ -768,7 +788,62 @@ impl SemServer {
         )]))
     }
 
-    // ── Tool 6: Context ──
+    // ── Tool 6: Grep ──
+
+    #[tool(description = "Graph-backed entity search for discovery, migrations, and review narrowing")]
+    async fn sem_grep(
+        &self,
+        Parameters(params): Parameters<GrepParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let GrepParams {
+            pattern,
+            content,
+            case_sensitive,
+            entity_types,
+            path,
+            tests,
+            depends_on,
+            ref_kind,
+            min_dependencies,
+            min_dependents,
+            file_exts,
+        } = params;
+
+        let ref_kind = ref_kind
+            .as_deref()
+            .map(|kind| kind.parse::<GrepRefKind>())
+            .transpose()
+            .map_err(internal_err)?;
+
+        let query = GrepQuery {
+            pattern,
+            content,
+            case_sensitive,
+            entity_types,
+            path_substring: path,
+            tests,
+            depends_on,
+            ref_kind,
+            min_dependencies,
+            min_dependents,
+        };
+
+        let repo_root = Self::discover_repo_root(None).map_err(internal_err)?;
+
+        let mut file_paths = Self::find_supported_files(&repo_root, &self.registry);
+        if !file_exts.is_empty() {
+            let ext_filter = normalize_file_exts(&file_exts);
+            file_paths.retain(|path| ext_filter.iter().any(|ext| path.ends_with(ext.as_str())));
+        }
+        let (graph, all_entities) = self.get_or_build_graph(&repo_root, &file_paths).await;
+        let matches = find_matches(&graph, &all_entities, &query).map_err(internal_err)?;
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&result_json(&matches, &query)).unwrap_or_default(),
+        )]))
+    }
+
+    // ── Tool 7: Context ──
 
     #[tool(description = "Pack optimal entity context into a token budget. Priority: target entity (full) > direct dependents (full) > transitive (signature only).")]
     async fn sem_context(
@@ -828,7 +903,7 @@ impl ServerHandler for SemServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "sem MCP server for entity-level semantic code intelligence. \
-             6 tools: entities, diff, blame, impact, log, context.",
+             7 tools: entities, diff, blame, impact, log, grep, context.",
         )
     }
 }

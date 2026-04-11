@@ -5,4 +5,5 @@ pub mod graph;
 pub mod plugins;
 pub mod verify;
 pub mod context;
+pub mod grep;
 pub mod hotspot;
