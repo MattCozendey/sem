@@ -22,13 +22,9 @@
   <img src="https://img.shields.io/badge/languages-23-blue" alt="Languages">
 </p>
 
-sem is a semantic version control tool that works on top of Git. It parses your code with tree-sitter, extracts every function, class, and method as an entity, and diffs at the entity level instead of lines. This means you see "function `authenticate` was modified" instead of "lines 47-52 changed."
+sem is a semantic version control tool that works on top of Git. It parses your code with tree-sitter, extracts every function, class, and method as an entity, and diffs at the entity level instead of lines. This means you see "function `blahh` was modified" instead of "lines x-y changed."
 
-It works in any Git repo with no setup. 23 languages supported. Runs in constant time (~57ms) regardless of file size because it only looks at entities that actually changed.
-
-sem also builds a cross-file dependency graph. `sem impact` tells you which entities depend on a given function, transitively, across your entire codebase. No LLM, no hallucination, deterministic. Useful for code review triage: instead of reviewing 100 changed entities, narrow down to the 10 that have the most downstream dependents.
-
-Agents and CI pipelines consume sem through JSON output or the built-in MCP server (6 tools). Developers use the CLI directly or run `sem setup` to replace `git diff` output with entity-level diffs everywhere.
+It works in any Git repo with no setup.
 
 ```
 sem diff
