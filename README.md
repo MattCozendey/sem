@@ -275,7 +275,7 @@ This means sem detects renames and moves, not just additions and deletions. Stru
 
 ## MCP Server
 
-sem includes an MCP server with 6 tools for AI agents: `sem_entities`, `sem_diff`, `sem_blame`, `sem_impact`, `sem_log`, `sem_context`. These mirror the CLI commands exactly.
+sem includes an MCP server with 7 tools for AI agents: `sem_entities`, `sem_diff`, `sem_blame`, `sem_impact`, `sem_log`, `sem_grep`, `sem_context`. These mirror the CLI commands exactly.
 
 ```json
 {

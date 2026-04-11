@@ -8,9 +8,7 @@ use crate::cache::DiskCache;
 
 /// Normalize extension strings: ensure each starts with '.'
 pub fn normalize_exts(exts: &[String]) -> Vec<String> {
-    exts.iter().map(|e| {
-        if e.starts_with('.') { e.clone() } else { format!(".{}", e) }
-    }).collect()
+    sem_core::utils::paths::normalize_file_exts(exts)
 }
 
 /// Find all supported files in the repo (public for use by other commands).

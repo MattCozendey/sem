@@ -13,6 +13,7 @@ use commands::entities::{entities_command, EntitiesOptions};
 use commands::grep::{grep_command, GrepOptions, RefKind};
 use commands::impact::{impact_command, ImpactMode, ImpactOptions};
 use commands::log::{log_command, LogOptions};
+use sem_core::parser::grep::GrepQuery;
 
 #[derive(Parser)]
 #[command(name = "sem", version = env!("CARGO_PKG_VERSION"), about = "Semantic version control")]
@@ -399,16 +400,18 @@ fn main() {
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string(),
-                pattern,
-                content,
-                case_sensitive,
-                entity_types,
-                path_substring: path,
-                tests,
-                depends_on,
-                ref_kind,
-                min_dependencies,
-                min_dependents,
+                query: GrepQuery {
+                    pattern,
+                    content,
+                    case_sensitive,
+                    entity_types,
+                    path_substring: path,
+                    tests,
+                    depends_on,
+                    ref_kind: ref_kind.map(Into::into),
+                    min_dependencies,
+                    min_dependents,
+                },
                 json,
                 file_exts,
                 no_cache,
