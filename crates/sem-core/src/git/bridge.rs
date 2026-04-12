@@ -3,9 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use git2::{
-    Delta, Diff, DiffOptions, ErrorCode, Repository,
-};
+use git2::{Blame, Delta, Diff, DiffOptions, ErrorCode, Oid, Repository};
 use thiserror::Error;
 
 use super::types::{CommitInfo, DiffScope, FileChange, FileStatus};
@@ -33,9 +31,8 @@ impl GitBridge {
                 let _guard = owner_validation_lock()
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                unsafe { git2::opts::set_verify_owner_validation(false)? };
+                let _owner_validation = OwnerValidationDisabled::new()?;
                 let repo = Repository::discover(path);
-                unsafe { git2::opts::set_verify_owner_validation(true)? };
                 repo.map_err(map_git_error)?
             }
             Err(error) => return Err(map_git_error(error)),
@@ -49,6 +46,17 @@ impl GitBridge {
 
     pub fn repo_root(&self) -> &Path {
         &self.repo_root
+    }
+
+    pub fn blame_file(&self, file_path: &Path) -> Result<Blame<'_>, GitError> {
+        Ok(self.repo.blame_file(file_path, None)?)
+    }
+
+    pub fn commit_summary(&self, oid: Oid) -> Option<String> {
+        self.repo
+            .find_commit(oid)
+            .ok()
+            .and_then(|commit| commit.summary().map(String::from))
     }
 
     pub fn get_head_sha(&self) -> Result<String, GitError> {
@@ -535,6 +543,25 @@ fn paths_match(left: &Path, right: &Path) -> bool {
 fn owner_validation_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct OwnerValidationDisabled;
+
+impl OwnerValidationDisabled {
+    fn new() -> Result<Self, GitError> {
+        // libgit2 stores this as a process-global option; callers hold owner_validation_lock.
+        unsafe { git2::opts::set_verify_owner_validation(false)? };
+        Ok(Self)
+    }
+}
+
+impl Drop for OwnerValidationDisabled {
+    fn drop(&mut self) {
+        // Restore the default before the owner-validation lock is released.
+        unsafe {
+            let _ = git2::opts::set_verify_owner_validation(true);
+        }
+    }
 }
 
 #[cfg(test)]
