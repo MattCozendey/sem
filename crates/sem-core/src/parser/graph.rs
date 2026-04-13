@@ -920,9 +920,170 @@ fn build_import_table(
                 }
             }
         }
+
+        // Rust imports: use crate::module::Name; / use crate::module::{A, B};
+        // Also: use super::module::Name; / use self::module::Name;
+        let is_rust = file_path.ends_with(".rs");
+        if is_rust {
+            static RUST_USE_SIMPLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+                // use crate::config::Config;
+                // use super::types::Entity;
+                // use config::Config;  (bare module path in binary crates)
+                Regex::new(r"(?m)^\s*use\s+(?:(?:crate|super|self)::)?([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*;").unwrap()
+            });
+            static RUST_USE_GROUP_RE: LazyLock<Regex> = LazyLock::new(|| {
+                // use crate::types::{Entity, ParseError};
+                // use types::{Entity, ParseError};  (bare module path)
+                Regex::new(r"(?m)^\s*use\s+(?:(?:crate|super|self)::)?([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)::\{([^}]+)\}\s*;").unwrap()
+            });
+
+            // Build a map: module_name -> list of file paths whose stem matches
+            // For "use crate::config::Config", module is "config", name is "Config"
+            for cap in RUST_USE_SIMPLE_RE.captures_iter(&content) {
+                let full_path_str = cap.get(1).unwrap().as_str();
+                let parts: Vec<&str> = full_path_str.split("::").collect();
+                if parts.is_empty() { continue; }
+
+                // Last part is the imported name, everything before is the module path
+                let imported_name = parts[parts.len() - 1];
+                // The module is the second-to-last part, or the first if only one part
+                let source_module = if parts.len() >= 2 {
+                    parts[parts.len() - 2]
+                } else {
+                    parts[0]
+                };
+
+                resolve_rust_import(
+                    file_path, imported_name, source_module,
+                    symbol_table, entity_map, &mut import_table,
+                );
+            }
+
+            for cap in RUST_USE_GROUP_RE.captures_iter(&content) {
+                let module_path = cap.get(1).unwrap().as_str();
+                let names_str = cap.get(2).unwrap().as_str();
+
+                // source_module is the last segment of the module path
+                let source_module = module_path.rsplit("::").next().unwrap_or(module_path);
+
+                for name_part in names_str.split(',') {
+                    let name_part = name_part.trim();
+                    // Handle "Name as Alias"
+                    let (original, local) = if let Some(pos) = name_part.find(" as ") {
+                        (&name_part[..pos], name_part[pos + 4..].trim())
+                    } else {
+                        (name_part, name_part)
+                    };
+                    let original = original.trim();
+                    let local = local.trim();
+                    if original.is_empty() || local.is_empty() { continue; }
+
+                    resolve_rust_import(
+                        file_path, original, source_module,
+                        symbol_table, entity_map, &mut import_table,
+                    );
+                    // If aliased, also map the local name
+                    if local != original {
+                        if let Some(target) = import_table.get(&(file_path.clone(), original.to_string())).cloned() {
+                            import_table.insert(
+                                (file_path.clone(), local.to_string()),
+                                target,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Go imports: import "module/path" or import ( "module/path" )
+        // Go uses the last path component as the package name
+        let is_go = file_path.ends_with(".go");
+        if is_go {
+            static GO_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| {
+                Regex::new(r#"(?m)"([^"]+)""#).unwrap()
+            });
+
+            // Only look in import blocks
+            let import_section = extract_go_import_section(&content);
+            for cap in GO_IMPORT_RE.captures_iter(&import_section) {
+                let import_path = cap.get(1).unwrap().as_str();
+                let pkg_name = import_path.rsplit('/').next().unwrap_or(import_path);
+
+                // Map all entities from files matching this package name
+                for (name, target_ids) in symbol_table.iter() {
+                    for target_id in target_ids {
+                        if let Some(entity) = entity_map.get(target_id) {
+                            let stem = entity.file_path.rsplit('/').next().unwrap_or(&entity.file_path);
+                            let stem = strip_file_ext(stem);
+                            // Go: file stem or directory matches package name
+                            if stem == pkg_name || entity.file_path.contains(&format!("{}/", pkg_name)) {
+                                import_table.insert(
+                                    (file_path.clone(), name.clone()),
+                                    target_id.clone(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     import_table
+}
+
+/// Resolve a Rust import: find the target entity in the symbol table
+/// by matching the imported name against entities in files whose stem matches source_module.
+fn resolve_rust_import(
+    file_path: &str,
+    imported_name: &str,
+    source_module: &str,
+    symbol_table: &HashMap<String, Vec<String>>,
+    entity_map: &HashMap<String, EntityInfo>,
+    import_table: &mut HashMap<(String, String), String>,
+) {
+    if let Some(target_ids) = symbol_table.get(imported_name) {
+        let target = target_ids.iter().find(|id| {
+            entity_map.get(*id).map_or(false, |e| {
+                let stem = e.file_path.rsplit('/').next().unwrap_or(&e.file_path);
+                let stem = strip_file_ext(stem);
+                stem == source_module
+            })
+        });
+        if let Some(target_id) = target {
+            import_table.insert(
+                (file_path.to_string(), imported_name.to_string()),
+                target_id.clone(),
+            );
+        }
+    }
+}
+
+/// Extract Go import section (everything inside import blocks).
+fn extract_go_import_section(content: &str) -> String {
+    let mut result = String::new();
+    let mut in_import_block = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("import (") {
+            in_import_block = true;
+            continue;
+        }
+        if trimmed.starts_with("import \"") || trimmed.starts_with("import `") {
+            result.push_str(trimmed);
+            result.push('\n');
+            continue;
+        }
+        if in_import_block {
+            if trimmed == ")" {
+                in_import_block = false;
+            } else {
+                result.push_str(trimmed);
+                result.push('\n');
+            }
+        }
+    }
+    result
 }
 
 /// Strip JS/TS extensions from a module name.
@@ -1598,5 +1759,446 @@ export function caller() {
             "caller should still resolve helper via bag-of-words. Deps: {:?}",
             deps.iter().map(|d| &d.name).collect::<Vec<_>>()
         );
+    }
+
+    /// Benchmark test: measures graph accuracy against known ground truth.
+    /// Reports true positives, false negatives, and false positives.
+    #[test]
+    fn bench_graph_accuracy_python() {
+        let (dir, registry) = create_test_repo();
+        let root = dir.path();
+
+        // auth.py: User class with validate/to_dict, Admin extends User
+        write_file(root, "auth.py", r#"class User:
+    def __init__(self, name, email):
+        self.name = name
+        self.email = email
+
+    def validate(self):
+        return len(self.name) > 0 and "@" in self.email
+
+    def to_dict(self):
+        return {"name": self.name, "email": self.email}
+
+
+class Admin(User):
+    def __init__(self, name, email, role):
+        super().__init__(name, email)
+        self.role = role
+
+    def validate(self):
+        return super().validate() and self.role in ["admin", "superadmin"]
+
+    def get_permissions(self):
+        if self.role == "superadmin":
+            return ["read", "write", "delete", "manage"]
+        return ["read", "write"]
+"#);
+
+        // db.py: standalone database functions
+        write_file(root, "db.py", r#"import sqlite3
+
+
+def get_connection():
+    return sqlite3.connect("app.db")
+
+
+def save_record(conn, data):
+    keys = ", ".join(data.keys())
+    placeholders = ", ".join(["?"] * len(data))
+    conn.execute(
+        f"INSERT INTO users ({keys}) VALUES ({placeholders})",
+        list(data.values()),
+    )
+    conn.commit()
+
+
+def delete_record(conn, user_id):
+    conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    conn.commit()
+"#);
+
+        // api.py: imports from auth + db
+        write_file(root, "api.py", r#"from auth import User, Admin
+from db import get_connection, save_record
+
+
+def create_user(name, email):
+    user = User(name, email)
+    if not user.validate():
+        raise ValueError("Invalid user")
+    conn = get_connection()
+    save_record(conn, user.to_dict())
+    return user
+
+
+def create_admin(name, email, role):
+    admin = Admin(name, email, role)
+    if not admin.validate():
+        raise ValueError("Invalid admin")
+    perms = admin.get_permissions()
+    conn = get_connection()
+    save_record(conn, {**admin.to_dict(), "permissions": perms})
+    return admin
+
+
+def list_users():
+    conn = get_connection()
+    return conn.execute("SELECT * FROM users")
+"#);
+
+        // handlers.py: imports from api + auth
+        write_file(root, "handlers.py", r#"from api import create_user, create_admin, list_users
+from auth import User
+
+
+def handle_signup(request):
+    name = request.get("name")
+    email = request.get("email")
+    return create_user(name, email)
+
+
+def handle_admin_create(request):
+    name = request.get("name")
+    email = request.get("email")
+    role = request.get("role", "admin")
+    return create_admin(name, email, role)
+
+
+def handle_list(request):
+    users = list_users()
+    return [u for u in users]
+
+
+def validate_request(request):
+    if not request.get("name"):
+        raise ValueError("Name required")
+    if not request.get("email"):
+        raise ValueError("Email required")
+    return True
+"#);
+
+        let files: Vec<String> = vec![
+            "auth.py".into(), "db.py".into(), "api.py".into(), "handlers.py".into(),
+        ];
+        let graph = EntityGraph::build(root, &files, &registry);
+
+        // Print all entities for debugging
+        eprintln!("\n=== PYTHON BENCHMARK: ENTITIES ({}) ===", graph.entities.len());
+        let mut entity_ids: Vec<_> = graph.entities.keys().collect();
+        entity_ids.sort();
+        for id in &entity_ids {
+            eprintln!("  {}", id);
+        }
+
+        // Print all edges
+        eprintln!("\n=== PYTHON BENCHMARK: EDGES ({}) ===", graph.edges.len());
+        for edge in &graph.edges {
+            eprintln!("  {} --{:?}--> {}", edge.from_entity, edge.ref_type, edge.to_entity);
+        }
+
+        // Ground truth: expected edges (from_contains, to_contains, description)
+        let expected_edges: Vec<(&str, &str, &str)> = vec![
+            // api.py -> auth.py cross-file imports
+            ("create_user", "User", "create_user uses User class"),
+            ("create_user", "get_connection", "create_user calls get_connection"),
+            ("create_user", "save_record", "create_user calls save_record"),
+            ("create_admin", "Admin", "create_admin uses Admin class"),
+            ("create_admin", "get_connection", "create_admin calls get_connection"),
+            ("create_admin", "save_record", "create_admin calls save_record"),
+            ("list_users", "get_connection", "list_users calls get_connection"),
+            // handlers.py -> api.py cross-file imports
+            ("handle_signup", "create_user", "handle_signup calls create_user"),
+            ("handle_admin_create", "create_admin", "handle_admin_create calls create_admin"),
+            ("handle_list", "list_users", "handle_list calls list_users"),
+        ];
+
+        // Edges that should NOT exist (false positives)
+        let false_positive_checks: Vec<(&str, &str, &str)> = vec![
+            ("validate_request", "validate", "validate_request should NOT link to auth.validate"),
+            ("save_record", "create_user", "db should NOT depend on api"),
+            ("delete_record", "create_user", "db should NOT depend on api"),
+        ];
+
+        let mut tp = 0;
+        let mut fn_count = 0;
+        eprintln!("\n=== EXPECTED EDGES CHECK ===");
+        for (from_pat, to_pat, desc) in &expected_edges {
+            let found = graph.edges.iter().any(|e| {
+                e.from_entity.contains(from_pat) && e.to_entity.contains(to_pat)
+            });
+            if found {
+                eprintln!("  TP: {} -> {} ({})", from_pat, to_pat, desc);
+                tp += 1;
+            } else {
+                eprintln!("  FN: {} -> {} ({})", from_pat, to_pat, desc);
+                fn_count += 1;
+            }
+        }
+
+        let mut fp = 0;
+        eprintln!("\n=== FALSE POSITIVE CHECK ===");
+        for (from_pat, to_pat, desc) in &false_positive_checks {
+            let found = graph.edges.iter().any(|e| {
+                e.from_entity.contains(from_pat) && e.to_entity.contains(to_pat)
+            });
+            if found {
+                eprintln!("  FP: {} -> {} ({})", from_pat, to_pat, desc);
+                fp += 1;
+            } else {
+                eprintln!("  OK: {} -/-> {} ({})", from_pat, to_pat, desc);
+            }
+        }
+
+        let total_edges = graph.edges.len();
+        let precision = if tp + fp > 0 { tp as f64 / (tp + fp) as f64 } else { 0.0 };
+        let recall = if tp + fn_count > 0 { tp as f64 / (tp + fn_count) as f64 } else { 0.0 };
+        let f1 = if precision + recall > 0.0 { 2.0 * precision * recall / (precision + recall) } else { 0.0 };
+
+        eprintln!("\n=== PYTHON RESULTS ===");
+        eprintln!("  Entities: {}", graph.entities.len());
+        eprintln!("  Total edges: {}", total_edges);
+        eprintln!("  True Positives: {}/{}", tp, expected_edges.len());
+        eprintln!("  False Negatives: {}", fn_count);
+        eprintln!("  False Positives (checked): {}", fp);
+        eprintln!("  Recall: {:.1}%", recall * 100.0);
+        eprintln!("  F1 (sampled): {:.1}%", f1 * 100.0);
+
+        // The test passes regardless - it's a benchmark, not a gate
+        // But print a clear summary for comparison
+        assert!(tp > 0, "Should find at least some expected edges");
+    }
+
+    #[test]
+    fn bench_graph_accuracy_rust() {
+        let (dir, registry) = create_test_repo();
+        let root = dir.path();
+
+        write_file(root, "config.rs", r#"use std::collections::HashMap;
+
+pub struct Config {
+    pub values: HashMap<String, String>,
+    pub debug: bool,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        Config {
+            values: HashMap::new(),
+            debug: false,
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.values.get(key)
+    }
+
+    pub fn set(&mut self, key: String, value: String) {
+        self.values.insert(key, value);
+    }
+}
+
+pub fn load_config(path: &str) -> Config {
+    let mut config = Config::new();
+    config.set("path".to_string(), path.to_string());
+    config
+}
+"#);
+
+        write_file(root, "types.rs", r#"use std::fmt;
+
+pub struct Entity {
+    pub name: String,
+    pub kind: String,
+}
+
+impl Entity {
+    pub fn new(name: String, kind: String) -> Self {
+        Entity { name, kind }
+    }
+
+    pub fn display_name(&self) -> String {
+        format!("{} ({})", self.name, self.kind)
+    }
+}
+
+impl fmt::Display for Entity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.kind, self.name)
+    }
+}
+
+pub enum ParseError {
+    Empty,
+    InvalidSyntax(String),
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParseError::Empty => write!(f, "empty content"),
+            ParseError::InvalidSyntax(msg) => write!(f, "invalid syntax: {}", msg),
+        }
+    }
+}
+"#);
+
+        write_file(root, "parser.rs", r#"use crate::config::Config;
+use crate::types::{Entity, ParseError};
+
+pub struct Parser {
+    config: Config,
+}
+
+impl Parser {
+    pub fn new(config: Config) -> Self {
+        Parser { config }
+    }
+
+    pub fn parse(&self, content: &str) -> Result<Vec<Entity>, ParseError> {
+        let mut entities = Vec::new();
+        for line in content.lines() {
+            if let Some(entity) = extract_entity(line) {
+                entities.push(entity);
+            }
+        }
+        Ok(entities)
+    }
+
+    pub fn is_debug(&self) -> bool {
+        self.config.debug
+    }
+}
+
+fn extract_entity(line: &str) -> Option<Entity> {
+    if line.starts_with("fn ") || line.starts_with("pub fn ") {
+        Some(Entity {
+            name: line.to_string(),
+            kind: "function".to_string(),
+        })
+    } else {
+        None
+    }
+}
+
+pub fn validate_content(content: &str) -> Result<(), ParseError> {
+    if content.is_empty() {
+        return Err(ParseError::Empty);
+    }
+    Ok(())
+}
+"#);
+
+        write_file(root, "main.rs", r#"mod config;
+mod parser;
+mod types;
+
+use config::{load_config, Config};
+use parser::Parser;
+use types::Entity;
+
+fn main() {
+    let config = load_config("config.toml");
+    let parser = Parser::new(config);
+
+    let content = std::fs::read_to_string("input.rs").unwrap();
+    match parser.parse(&content) {
+        Ok(entities) => {
+            for entity in &entities {
+                println!("{}", entity.display_name());
+            }
+            process_entities(entities);
+        }
+        Err(e) => eprintln!("Error: {}", e),
+    }
+}
+
+fn process_entities(entities: Vec<Entity>) {
+    for entity in entities {
+        println!("Processing: {}", entity);
+    }
+}
+"#);
+
+        let files: Vec<String> = vec![
+            "config.rs".into(), "types.rs".into(), "parser.rs".into(), "main.rs".into(),
+        ];
+        let graph = EntityGraph::build(root, &files, &registry);
+
+        eprintln!("\n=== RUST BENCHMARK: ENTITIES ({}) ===", graph.entities.len());
+        let mut entity_ids: Vec<_> = graph.entities.keys().collect();
+        entity_ids.sort();
+        for id in &entity_ids {
+            eprintln!("  {}", id);
+        }
+
+        eprintln!("\n=== RUST BENCHMARK: EDGES ({}) ===", graph.edges.len());
+        for edge in &graph.edges {
+            eprintln!("  {} --{:?}--> {}", edge.from_entity, edge.ref_type, edge.to_entity);
+        }
+
+        // Expected edges for Rust
+        let expected_edges: Vec<(&str, &str, &str)> = vec![
+            // parser.rs -> config.rs (cross-file via use)
+            ("Parser::new", "Config", "Parser::new takes Config"),
+            ("Parser::parse", "Entity", "Parser::parse returns Entity"),
+            ("Parser::parse", "ParseError", "Parser::parse returns ParseError"),
+            ("Parser::parse", "extract_entity", "parse calls extract_entity"),
+            ("extract_entity", "Entity", "extract_entity returns Entity"),
+            ("validate_content", "ParseError", "validate_content returns ParseError"),
+            // main.rs -> other modules (cross-file via use)
+            ("main", "load_config", "main calls load_config"),
+            ("main", "Parser", "main uses Parser"),
+            ("main", "process_entities", "main calls process_entities"),
+            // load_config -> Config (same-file)
+            ("load_config", "Config", "load_config returns Config"),
+        ];
+
+        let false_positive_checks: Vec<(&str, &str, &str)> = vec![
+            ("Config", "Parser", "config should NOT depend on parser"),
+            ("Entity", "extract_entity", "types should NOT depend on parser"),
+        ];
+
+        let mut tp = 0;
+        let mut fn_count = 0;
+        eprintln!("\n=== EXPECTED EDGES CHECK ===");
+        for (from_pat, to_pat, desc) in &expected_edges {
+            let found = graph.edges.iter().any(|e| {
+                e.from_entity.contains(from_pat) && e.to_entity.contains(to_pat)
+            });
+            if found {
+                eprintln!("  TP: {} -> {} ({})", from_pat, to_pat, desc);
+                tp += 1;
+            } else {
+                eprintln!("  FN: {} -> {} ({})", from_pat, to_pat, desc);
+                fn_count += 1;
+            }
+        }
+
+        let mut fp = 0;
+        eprintln!("\n=== FALSE POSITIVE CHECK ===");
+        for (from_pat, to_pat, desc) in &false_positive_checks {
+            let found = graph.edges.iter().any(|e| {
+                e.from_entity.contains(from_pat) && e.to_entity.contains(to_pat)
+            });
+            if found {
+                eprintln!("  FP: {} -> {} ({})", from_pat, to_pat, desc);
+                fp += 1;
+            } else {
+                eprintln!("  OK: {} -/-> {} ({})", from_pat, to_pat, desc);
+            }
+        }
+
+        let recall = if tp + fn_count > 0 { tp as f64 / (tp + fn_count) as f64 } else { 0.0 };
+
+        eprintln!("\n=== RUST RESULTS ===");
+        eprintln!("  Entities: {}", graph.entities.len());
+        eprintln!("  Total edges: {}", graph.edges.len());
+        eprintln!("  True Positives: {}/{}", tp, expected_edges.len());
+        eprintln!("  False Negatives: {}", fn_count);
+        eprintln!("  False Positives (checked): {}", fp);
+        eprintln!("  Recall: {:.1}%", recall * 100.0);
+
+        assert!(graph.entities.len() > 0, "Should extract some entities");
     }
 }
