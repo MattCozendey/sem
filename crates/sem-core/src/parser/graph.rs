@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::git::types::{FileChange, FileStatus};
 use crate::model::entity::SemanticEntity;
 use crate::parser::registry::ParserRegistry;
+use crate::parser::scope_resolve;
 
 /// A reference from one entity to another.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,12 +190,34 @@ impl EntityGraph {
         // e.g. ("io_handler.py", "validate") → "core.py::function::validate"
         let import_table = build_import_table(root, file_paths, &symbol_table, &entity_map);
 
+        // Run scope-aware resolver for supported languages
+        let has_scope_lang = file_paths.iter().any(|f| {
+            f.ends_with(".py") || f.ends_with(".ts") || f.ends_with(".tsx")
+                || f.ends_with(".js") || f.ends_with(".jsx")
+                || f.ends_with(".rs") || f.ends_with(".go")
+        });
+        let (scope_edges, scope_resolved_entities) = if has_scope_lang {
+            let result = scope_resolve::resolve_with_scopes(root, file_paths, &all_entities, &entity_map);
+            let resolved_entity_ids: HashSet<String> = result.edges.iter()
+                .map(|(from, _, _)| from.clone())
+                .collect();
+            (result.edges, resolved_entity_ids)
+        } else {
+            (vec![], HashSet::new())
+        };
+
         // Pass 2: Extract references in parallel, then resolve against symbol table
         // Phase 1: Dot-chain resolution (precise self.X, this.X, ClassName.X)
         // Phase 2: Bag-of-words resolution (existing logic, skipping consumed words)
+        // Skip entities already resolved by scope resolver (Python files)
         let resolved_refs: Vec<(String, String, RefType)> = all_entities
             .par_iter()
             .flat_map(|entity| {
+                // Skip entities already resolved by scope resolver
+                if scope_resolved_entities.contains(&entity.id) {
+                    return vec![];
+                }
+
                 let mut entity_edges = Vec::new();
                 let mut consumed_words: HashSet<String> = HashSet::new();
 
@@ -302,12 +325,18 @@ impl EntityGraph {
             })
             .collect();
 
-        // Step 2b: Build edge indexes from resolved references
-        let mut edges: Vec<EntityRef> = Vec::with_capacity(resolved_refs.len());
+        // Merge scope edges with bag-of-words edges, deduplicating
+        let mut all_resolved: Vec<(String, String, RefType)> = scope_edges;
+        all_resolved.extend(resolved_refs);
+        let mut seen_edges: HashSet<(String, String)> = HashSet::new();
+        all_resolved.retain(|e| seen_edges.insert((e.0.clone(), e.1.clone())));
+
+        // Build edge indexes from resolved references
+        let mut edges: Vec<EntityRef> = Vec::with_capacity(all_resolved.len());
         let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
         let mut dependencies: HashMap<String, Vec<String>> = HashMap::new();
 
-        for (from_entity, to_entity, ref_type) in resolved_refs {
+        for (from_entity, to_entity, ref_type) in all_resolved {
             dependents
                 .entry(to_entity.clone())
                 .or_default()
