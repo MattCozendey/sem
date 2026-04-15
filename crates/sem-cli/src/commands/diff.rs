@@ -451,7 +451,14 @@ fn run_diff_pipeline(
     };
 
     if file_changes.is_empty() {
-        println!("\x1b[2mNo changes detected.\x1b[0m");
+        match opts.format {
+            OutputFormat::Json => {
+                println!("{{\"summary\":{{\"fileCount\":0,\"added\":0,\"modified\":0,\"deleted\":0,\"moved\":0,\"renamed\":0,\"total\":0}},\"changes\":[]}}");
+            }
+            _ => {
+                println!("\x1b[2mNo semantic changes detected.\x1b[0m");
+            }
+        }
         return;
     }
 
