@@ -217,12 +217,24 @@ fn parse_unified_diff(patch: &str, cwd: &str) -> Vec<FileChange> {
 
     entries
         .into_iter()
-        .map(|e| FileChange {
-            file_path: e.file_path,
-            old_file_path: e.old_file_path,
-            status: e.status,
-            before_content: e.old_sha.as_deref().and_then(git_show),
-            after_content: e.new_sha.as_deref().and_then(git_show),
+        .map(|e| {
+            let before_content = e.old_sha.as_deref().and_then(&git_show);
+            let mut after_content = e.new_sha.as_deref().and_then(&git_show);
+
+            // Fallback: if git show fails for the new SHA (e.g. unstaged working
+            // tree changes where the blob doesn't exist yet), read from disk.
+            if after_content.is_none() && e.new_sha.is_some() {
+                let file = Path::new(cwd).join(&e.file_path);
+                after_content = std::fs::read_to_string(&file).ok();
+            }
+
+            FileChange {
+                file_path: e.file_path,
+                old_file_path: e.old_file_path,
+                status: e.status,
+                before_content,
+                after_content,
+            }
         })
         .collect()
 }
