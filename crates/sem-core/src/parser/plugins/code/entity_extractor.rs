@@ -145,6 +145,15 @@ fn visit_node(
             let entity_type = map_entity_type(node, config);
             let should_skip = should_skip_entity(config, suppression_context, node_type);
             if !should_skip {
+                // Go method_declaration: extract receiver type for parent linkage.
+                // e.g. `func (t *Transaction) Execute(...)` -> parent is Transaction struct
+                let effective_parent = if node_type == "method_declaration" && parent_id.is_none() {
+                    extract_go_receiver_struct(node, source, file_path, entities)
+                } else {
+                    None
+                };
+                let parent_ref = effective_parent.as_deref().or(parent_id);
+
                 // Dart top-level signatures are split from their body node.
                 // When a sibling function_body exists, extend the entity to
                 // cover the full definition so body changes are detected.
@@ -165,11 +174,11 @@ fn visit_node(
                 };
 
                 let entity = SemanticEntity {
-                    id: build_entity_id(file_path, entity_type, &name, parent_id),
+                    id: build_entity_id(file_path, entity_type, &name, parent_ref),
                     file_path: file_path.to_string(),
                     entity_type: entity_type.to_string(),
                     name: name.clone(),
-                    parent_id: parent_id.map(String::from),
+                    parent_id: parent_ref.map(String::from),
                     content_hash: content_hash(&content),
                     structural_hash: Some(struct_hash),
                     content,
@@ -1358,4 +1367,41 @@ fn extract_ocaml_named_bindings(
         }
     }
     true
+}
+
+/// For Go method_declaration nodes, extract the receiver struct type name
+/// and find the matching struct entity ID to use as parent_id.
+/// e.g. `func (t *Transaction) Execute(...)` -> finds Transaction's entity ID
+fn extract_go_receiver_struct(
+    node: Node,
+    source: &[u8],
+    file_path: &str,
+    entities: &[SemanticEntity],
+) -> Option<String> {
+    let receiver = node.child_by_field_name("receiver")?;
+    // receiver is a parameter_list containing parameter_declaration(s)
+    let mut cursor = receiver.walk();
+    for param in receiver.named_children(&mut cursor) {
+        if param.kind() == "parameter_declaration" {
+            let type_node = param.child_by_field_name("type")?;
+            let type_text = node_text(type_node, source);
+            // Strip pointer: *Transaction -> Transaction
+            let struct_name = type_text.trim_start_matches('*');
+            if struct_name.is_empty() {
+                return None;
+            }
+            // Find matching struct/type entity in the same file
+            for e in entities.iter().rev() {
+                if e.file_path == file_path
+                    && e.name == struct_name
+                    && matches!(e.entity_type.as_str(), "type" | "struct" | "class" | "interface")
+                {
+                    return Some(e.id.clone());
+                }
+            }
+            // No struct entity found yet (might be in a different file), use synthetic ID
+            return Some(format!("{}::type::{}", file_path, struct_name));
+        }
+    }
+    None
 }

@@ -6,6 +6,7 @@ pub mod graph;
 pub mod impact;
 pub mod log;
 pub mod setup;
+pub mod verify;
 
 /// Truncate a string to `max_chars` Unicode scalar values (codepoints), appending "..." if
 /// truncated. Safe for multibyte encodings (CJK, simple emoji). Note: does not split on grapheme

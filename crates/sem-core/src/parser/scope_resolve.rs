@@ -580,6 +580,7 @@ fn build_scopes_from_ast(
         }
 
         scan_assignments(node, func_scope_idx, scopes, source, lang);
+        scan_function_params(node, func_scope_idx, scopes, source, lang);
 
         // Go: add receiver parameter type binding
         // func (t *Transaction) Execute(...) -> types["t"] = "Transaction"
@@ -692,6 +693,139 @@ fn scan_assignments(
                 }
                 if ck == "block" {
                     scan_assignments(child, scope_idx, scopes, source, lang);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Scan function parameter type annotations and add them as type bindings.
+/// e.g. `def foo(shelter: Shelter)` -> types["shelter"] = "Shelter"
+fn scan_function_params(
+    node: tree_sitter::Node,
+    scope_idx: usize,
+    scopes: &mut Vec<Scope>,
+    source: &[u8],
+    lang: &str,
+) {
+    let params_node = match node.child_by_field_name("parameters") {
+        Some(p) => p,
+        None => return,
+    };
+
+    let mut cursor = params_node.walk();
+    for child in params_node.named_children(&mut cursor) {
+        match lang {
+            "python" => {
+                // typed_parameter: name + type
+                if child.kind() == "typed_parameter" || child.kind() == "typed_default_parameter" {
+                    let param_name = child
+                        .child_by_field_name("name")
+                        .or_else(|| child.named_child(0).filter(|n| n.kind() == "identifier"))
+                        .and_then(|n| n.utf8_text(source).ok())
+                        .unwrap_or("");
+                    if param_name == "self" || param_name == "cls" || param_name.is_empty() {
+                        continue;
+                    }
+                    if let Some(type_node) = child.child_by_field_name("type") {
+                        let type_text = extract_base_type(type_node, source);
+                        if !type_text.is_empty()
+                            && type_text.chars().next().map_or(false, |c| c.is_uppercase())
+                        {
+                            scopes[scope_idx]
+                                .types
+                                .insert(param_name.to_string(), type_text);
+                        }
+                    }
+                }
+            }
+            "typescript" => {
+                // required_parameter / optional_parameter with type_annotation
+                if child.kind() == "required_parameter" || child.kind() == "optional_parameter" {
+                    let param_name = child
+                        .child_by_field_name("pattern")
+                        .or_else(|| child.named_child(0).filter(|n| n.kind() == "identifier"))
+                        .and_then(|n| n.utf8_text(source).ok())
+                        .unwrap_or("");
+                    if param_name == "this" || param_name.is_empty() {
+                        continue;
+                    }
+                    if let Some(type_node) = child.child_by_field_name("type") {
+                        let type_text = extract_base_type(type_node, source);
+                        if !type_text.is_empty()
+                            && type_text.chars().next().map_or(false, |c| c.is_uppercase())
+                        {
+                            scopes[scope_idx]
+                                .types
+                                .insert(param_name.to_string(), type_text);
+                        }
+                    }
+                }
+            }
+            "rust" => {
+                // parameter: pattern + type
+                if child.kind() == "parameter" {
+                    let param_name = child
+                        .child_by_field_name("pattern")
+                        .and_then(|n| {
+                            if n.kind() == "identifier" {
+                                n.utf8_text(source).ok()
+                            } else if n.kind() == "mut_pattern" {
+                                n.named_child(0).and_then(|c| c.utf8_text(source).ok())
+                            } else if n.kind() == "reference_pattern" {
+                                // &x or &mut x
+                                n.named_child(0).and_then(|c| {
+                                    if c.kind() == "identifier" {
+                                        c.utf8_text(source).ok()
+                                    } else if c.kind() == "mut_pattern" {
+                                        c.named_child(0).and_then(|cc| cc.utf8_text(source).ok())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or("");
+                    if param_name == "self" || param_name.is_empty() {
+                        continue;
+                    }
+                    if let Some(type_node) = child.child_by_field_name("type") {
+                        let type_text = extract_base_type(type_node, source);
+                        if !type_text.is_empty()
+                            && type_text.chars().next().map_or(false, |c| c.is_uppercase())
+                        {
+                            scopes[scope_idx]
+                                .types
+                                .insert(param_name.to_string(), type_text);
+                        }
+                    }
+                }
+            }
+            "go" => {
+                // parameter_declaration: name + type (handled separately for receivers above,
+                // but we also want regular function params)
+                if child.kind() == "parameter_declaration" {
+                    let param_name = child
+                        .child_by_field_name("name")
+                        .and_then(|n| n.utf8_text(source).ok())
+                        .unwrap_or("");
+                    if param_name.is_empty() {
+                        continue;
+                    }
+                    let param_type = child
+                        .child_by_field_name("type")
+                        .map(|n| extract_base_type(n, source))
+                        .unwrap_or_default();
+                    if !param_type.is_empty()
+                        && param_type.chars().next().map_or(false, |c| c.is_uppercase())
+                    {
+                        scopes[scope_idx]
+                            .types
+                            .insert(param_name.to_string(), param_type);
+                    }
                 }
             }
             _ => {}
@@ -1027,10 +1161,13 @@ fn record_type_from_rhs(
 /// Strips pointers, references, generics to get just the type name.
 fn extract_base_type(type_node: tree_sitter::Node, source: &[u8]) -> String {
     let text = type_node.utf8_text(source).unwrap_or("").trim().to_string();
-    // Strip reference/pointer prefixes
+    // Strip reference/pointer prefixes and mut keyword
     let text = text.trim_start_matches('&').trim_start_matches('*');
-    // Strip generic parameters
+    let text = text.strip_prefix("mut ").unwrap_or(text).trim_start();
+    // Strip generic parameters (angle brackets and Python-style square brackets)
     let text = if let Some(i) = text.find('<') {
+        &text[..i]
+    } else if let Some(i) = text.find('[') {
         &text[..i]
     } else {
         text

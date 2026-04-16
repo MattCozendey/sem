@@ -12,6 +12,7 @@ use commands::diff::{diff_command, DiffOptions, OutputFormat};
 use commands::entities::{entities_command, EntitiesOptions};
 use commands::impact::{impact_command, ImpactMode, ImpactOptions};
 use commands::log::{log_command, LogOptions};
+use commands::verify::{verify_command, VerifyOptions};
 
 #[derive(Parser)]
 #[command(name = "sem", version = env!("CARGO_PKG_VERSION"), about = "Semantic version control")]
@@ -189,6 +190,20 @@ enum Commands {
         #[arg(long)]
         no_cache: bool,
     },
+    /// Verify function call arity across the codebase
+    Verify {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Compare working tree vs HEAD, find broken callers from signature changes
+        #[arg(long)]
+        diff: bool,
+
+        /// Only include files with these extensions (e.g. --file-exts .py .rs)
+        #[arg(long, num_args = 1..)]
+        file_exts: Vec<String>,
+    },
     /// Start the MCP server (stdin/stdout transport)
     Mcp,
     /// Replace `git diff` with `sem diff` globally
@@ -352,6 +367,21 @@ fn main() {
                 json,
                 file_exts,
                 no_cache,
+            });
+        }
+        Some(Commands::Verify {
+            json,
+            diff,
+            file_exts,
+        }) => {
+            verify_command(VerifyOptions {
+                cwd: std::env::current_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+                json,
+                diff,
+                file_exts,
             });
         }
         Some(Commands::Mcp) => {
