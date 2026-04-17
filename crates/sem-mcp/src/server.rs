@@ -122,17 +122,23 @@ impl SemServer {
 
     fn find_supported_files(root: &Path, registry: &ParserRegistry) -> Vec<String> {
         let mut files = Vec::new();
-        Self::walk_dir(root, root, registry, &mut files);
+        let _ = Self::walk_dir(root, root, registry, &mut files);
         files.sort();
         files
     }
 
-    fn walk_dir(dir: &Path, root: &Path, registry: &ParserRegistry, files: &mut Vec<String>) {
+    fn walk_dir(
+        dir: &Path,
+        root: &Path,
+        registry: &ParserRegistry,
+        files: &mut Vec<String>,
+    ) -> Result<(), String> {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
-            Err(_) => return,
+            Err(e) => return Err(format!("Failed to read directory {}: {}", dir.display(), e)),
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 if name.starts_with('.')
@@ -148,7 +154,7 @@ impl SemServer {
                 }
             }
             if path.is_dir() {
-                Self::walk_dir(&path, root, registry, files);
+                Self::walk_dir(&path, root, registry, files)?;
             } else if let Ok(rel) = path.strip_prefix(root) {
                 let rel_str = rel.to_string_lossy().to_string();
                 if registry.get_plugin(&rel_str).is_some() {
@@ -156,11 +162,26 @@ impl SemServer {
                 }
             }
         }
+        Ok(())
     }
 
     fn read_file_at(abs_path: &Path, display_path: &str) -> Result<String, String> {
         std::fs::read_to_string(abs_path)
             .map_err(|e| format!("Failed to read {}: {}", display_path, e))
+    }
+
+    async fn extract_entities_from_files(
+        &self,
+        root: &Path,
+        file_paths: &[String],
+    ) -> Result<Vec<SemanticEntity>, String> {
+        let mut entities = Vec::new();
+        for rel_path in file_paths {
+            let abs_path = root.join(rel_path);
+            let content = Self::read_file_at(&abs_path, rel_path)?;
+            entities.extend(self.cached_extract_entities(&content, rel_path).await);
+        }
+        Ok(entities)
     }
 
     async fn cached_extract_entities(
@@ -330,35 +351,58 @@ impl SemServer {
 
     // ── Tool 1: Entities ──
 
-    #[tool(description = "List all semantic entities (functions, classes, etc.) in a file with their types and line ranges")]
+    #[tool(description = "List semantic entities (functions, classes, etc.) under a file or directory path. Defaults to '.'.")]
     async fn sem_entities(
         &self,
         Parameters(params): Parameters<EntitiesParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let path = params.path().unwrap_or(".");
         let ctx = self
-            .get_context(Some(&params.file_path))
+            .get_context(Some(path))
             .await
             .map_err(internal_err)?;
-        let (rel_path, abs_path) = Self::resolve_file_path(&ctx.repo_root, &params.file_path);
-        let content = Self::read_file_at(&abs_path, &rel_path).map_err(internal_err)?;
 
-        let entities = self.cached_extract_entities(&content, &rel_path).await;
-        if entities.is_empty() {
-            if self.registry.get_plugin(&rel_path).is_none() {
-                return Err(internal_err(format!("No parser for file: {}", rel_path)));
+        let (rel_path, abs_path) = Self::resolve_file_path(&ctx.repo_root, path);
+        let (entities, include_file) = if abs_path.is_file() {
+            let content = Self::read_file_at(&abs_path, &rel_path).map_err(internal_err)?;
+
+            let entities = self.cached_extract_entities(&content, &rel_path).await;
+            if entities.is_empty() {
+                if self.registry.get_plugin(&rel_path).is_none() {
+                    return Err(internal_err(format!("No parser for file: {}", rel_path)));
+                }
             }
-        }
+            (entities, false)
+        } else if abs_path.is_dir() {
+            let mut file_paths = Vec::new();
+            Self::walk_dir(&abs_path, &ctx.repo_root, &self.registry, &mut file_paths)
+                .map_err(internal_err)?;
+            file_paths.sort();
+
+            let all_entities = self
+                .extract_entities_from_files(&ctx.repo_root, &file_paths)
+                .await
+                .map_err(internal_err)?;
+            (all_entities, true)
+        } else {
+            return Err(internal_err(format!("Path not found: {}", path)));
+        };
+
         let result: Vec<serde_json::Value> = entities
             .iter()
             .map(|e| {
-                serde_json::json!({
+                let mut value = serde_json::json!({
                     "id": e.id,
                     "name": e.name,
                     "type": e.entity_type,
                     "start_line": e.start_line,
                     "end_line": e.end_line,
                     "parent_id": e.parent_id,
-                })
+                });
+                if include_file {
+                    value["file"] = serde_json::json!(e.file_path);
+                }
+                value
             })
             .collect();
 
