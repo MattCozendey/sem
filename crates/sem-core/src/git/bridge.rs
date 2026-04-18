@@ -446,6 +446,33 @@ impl GitBridge {
         Ok(commits)
     }
 
+    /// Get all file paths changed in a single commit (vs its parent).
+    /// Returns file paths from the new side of each delta.
+    pub fn get_commit_changed_files(&self, sha: &str) -> Result<Vec<String>, GitError> {
+        let obj = self.repo.revparse_single(sha)?;
+        let commit = obj.peel_to_commit()?;
+        let tree = commit.tree()?;
+        let parent_tree = if commit.parent_count() > 0 {
+            Some(commit.parent(0)?.tree()?)
+        } else {
+            None
+        };
+        let diff = self.repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
+        let mut paths = Vec::new();
+        for delta in diff.deltas() {
+            if let Some(p) = delta.new_file().path().and_then(|p| p.to_str()) {
+                paths.push(p.to_string());
+            }
+            // Also include old path for deletions/renames
+            if let Some(p) = delta.old_file().path().and_then(|p| p.to_str()) {
+                if !paths.contains(&p.to_string()) {
+                    paths.push(p.to_string());
+                }
+            }
+        }
+        Ok(paths)
+    }
+
     pub fn get_log(&self, limit: usize) -> Result<Vec<CommitInfo>, GitError> {
         let mut revwalk = self.repo.revwalk()?;
         revwalk.push_head()?;
