@@ -26,11 +26,12 @@ pub struct DiffOptions {
     pub args: Vec<String>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum OutputFormat {
     Terminal,
     Plain,
     Json,
+    #[value(alias = "md")]
     Markdown,
 }
 
