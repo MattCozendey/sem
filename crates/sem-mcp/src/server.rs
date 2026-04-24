@@ -120,11 +120,11 @@ impl SemServer {
         }))
     }
 
-    fn find_supported_files(root: &Path, registry: &ParserRegistry) -> Vec<String> {
+    fn find_supported_files(root: &Path, registry: &ParserRegistry) -> Result<Vec<String>, String> {
         let mut files = Vec::new();
-        let _ = Self::walk_dir(root, root, registry, &mut files);
+        Self::walk_dir(root, root, registry, &mut files)?;
         files.sort();
-        files
+        Ok(files)
     }
 
     fn walk_dir(
@@ -561,7 +561,8 @@ impl SemServer {
             .map_err(internal_err)?;
         let (rel_path, _) = Self::resolve_file_path(&ctx.repo_root, &params.file_path);
 
-        let file_paths = Self::find_supported_files(&ctx.repo_root, &self.registry);
+        let file_paths =
+            Self::find_supported_files(&ctx.repo_root, &self.registry).map_err(internal_err)?;
         let (graph, all_entities) = self.get_or_build_graph(&ctx.repo_root, &file_paths).await;
 
         let entity_id = Self::find_entity_in_graph(&graph, &params.entity_name, &rel_path)?;
@@ -671,7 +672,8 @@ impl SemServer {
                 rel
             }
             None => {
-                let files = Self::find_supported_files(&ctx.repo_root, &self.registry);
+                let files = Self::find_supported_files(&ctx.repo_root, &self.registry)
+                    .map_err(internal_err)?;
                 let mut found_in: Vec<String> = Vec::new();
                 for fp in &files {
                     let full = ctx.repo_root.join(fp);
@@ -848,7 +850,8 @@ impl SemServer {
             .map_err(internal_err)?;
         let (rel_path, _) = Self::resolve_file_path(&ctx.repo_root, &params.file_path);
 
-        let file_paths = Self::find_supported_files(&ctx.repo_root, &self.registry);
+        let file_paths =
+            Self::find_supported_files(&ctx.repo_root, &self.registry).map_err(internal_err)?;
         let (graph, all_entities) = self.get_or_build_graph(&ctx.repo_root, &file_paths).await;
 
         let entity_id = Self::find_entity_in_graph(&graph, &params.entity_name, &rel_path)?;
@@ -897,6 +900,24 @@ impl ServerHandler for SemServer {
             "sem MCP server for entity-level semantic code intelligence. \
              6 tools: entities, diff, blame, impact, log, context.",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_supported_files_returns_walk_errors() {
+        let missing_root = std::env::temp_dir().join(format!(
+            "sem-mcp-missing-root-{}",
+            std::process::id()
+        ));
+        let registry = ParserRegistry::new();
+
+        let err = SemServer::find_supported_files(&missing_root, &registry).unwrap_err();
+
+        assert!(err.contains("Failed to read directory"));
     }
 }
 
