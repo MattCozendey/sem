@@ -6,7 +6,8 @@ use sem_core::parser::plugins::create_default_registry;
 
 pub struct ImpactOptions {
     pub cwd: String,
-    pub entity_name: String,
+    pub entity_name: Option<String>,
+    pub entity_id: Option<String>,
     pub file_hint: Option<String>,
     pub json: bool,
     pub file_exts: Vec<String>,
@@ -29,7 +30,7 @@ pub fn impact_command(opts: ImpactOptions) {
     let file_paths = super::graph::find_supported_files_public(root, &registry, &ext_filter);
     let (graph, all_entities) = super::graph::get_or_build_graph(root, &file_paths, &registry, opts.no_cache);
 
-    let entity = find_entity(&graph, &opts.entity_name, opts.file_hint.as_deref());
+    let entity = find_entity(&graph, opts.entity_name.as_deref(), opts.entity_id.as_deref(), opts.file_hint.as_deref());
 
     match opts.mode {
         ImpactMode::Deps => print_deps(&graph, entity, opts.json),
@@ -41,9 +42,24 @@ pub fn impact_command(opts: ImpactOptions) {
 
 fn find_entity<'a>(
     graph: &'a EntityGraph,
-    name: &str,
+    name: Option<&str>,
+    entity_id: Option<&str>,
     file_hint: Option<&str>,
 ) -> &'a sem_core::parser::graph::EntityInfo {
+    // Direct lookup by entity ID
+    if let Some(id) = entity_id {
+        if let Some(e) = graph.entities.get(id) {
+            return e;
+        }
+        eprintln!("{} Entity ID '{}' not found", "error:".red().bold(), id);
+        std::process::exit(1);
+    }
+
+    let name = name.unwrap_or_else(|| {
+        eprintln!("{} Either entity name or --entity-id is required", "error:".red().bold());
+        std::process::exit(1);
+    });
+
     let mut matching: Vec<_> = graph.entities.values().filter(|e| e.name == name).collect();
 
     if matching.is_empty() {
@@ -63,7 +79,7 @@ fn find_entity<'a>(
 
 fn entity_json(e: &sem_core::parser::graph::EntityInfo) -> serde_json::Value {
     serde_json::json!({
-        "name": e.name, "type": e.entity_type,
+        "entityId": e.id, "name": e.name, "type": e.entity_type,
         "file": e.file_path, "lines": [e.start_line, e.end_line],
     })
 }

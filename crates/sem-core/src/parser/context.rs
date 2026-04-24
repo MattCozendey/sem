@@ -8,6 +8,7 @@ use crate::parser::graph::EntityGraph;
 
 #[derive(Debug, Clone)]
 pub struct ContextEntry {
+    pub entity_id: String,
     pub entity_name: String,
     pub entity_type: String,
     pub file_path: String,
@@ -53,6 +54,7 @@ pub fn build_context(
         let tokens = estimate_tokens(&entity.content);
         if tokens_used + tokens <= token_budget {
             entries.push(ContextEntry {
+                entity_id: entity.id.clone(),
                 entity_name: entity.name.clone(),
                 entity_type: entity.entity_type.clone(),
                 file_path: entity.file_path.clone(),
@@ -74,6 +76,7 @@ pub fn build_context(
             let tokens = estimate_tokens(&entity.content);
             if tokens_used + tokens <= token_budget {
                 entries.push(ContextEntry {
+                    entity_id: entity.id.clone(),
                     entity_name: entity.name.clone(),
                     entity_type: entity.entity_type.clone(),
                     file_path: entity.file_path.clone(),
@@ -104,6 +107,7 @@ pub fn build_context(
             let tokens = estimate_tokens(&sig);
             if tokens_used + tokens <= token_budget {
                 entries.push(ContextEntry {
+                    entity_id: entity.id.clone(),
                     entity_name: entity.name.clone(),
                     entity_type: entity.entity_type.clone(),
                     file_path: entity.file_path.clone(),
