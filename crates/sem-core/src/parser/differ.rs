@@ -18,6 +18,7 @@ pub struct DiffResult {
     pub deleted_count: usize,
     pub moved_count: usize,
     pub renamed_count: usize,
+    pub reordered_count: usize,
 }
 
 pub fn compute_semantic_diff(
@@ -100,6 +101,7 @@ pub fn compute_semantic_diff(
     let mut deleted_count = 0;
     let mut moved_count = 0;
     let mut renamed_count = 0;
+    let mut reordered_count = 0;
 
     for c in &all_changes {
         match c.change_type {
@@ -108,6 +110,7 @@ pub fn compute_semantic_diff(
             ChangeType::Deleted => deleted_count += 1,
             ChangeType::Moved => moved_count += 1,
             ChangeType::Renamed => renamed_count += 1,
+            ChangeType::Reordered => reordered_count += 1,
         }
     }
 
@@ -119,6 +122,7 @@ pub fn compute_semantic_diff(
         deleted_count,
         moved_count,
         renamed_count,
+        reordered_count,
     }
 }
 

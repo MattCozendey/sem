@@ -30,6 +30,7 @@ pub fn format_json(result: &DiffResult) -> String {
             "deleted": result.deleted_count,
             "moved": result.moved_count,
             "renamed": result.renamed_count,
+            "reordered": result.reordered_count,
             "total": result.changes.len(),
         },
         "changes": changes,

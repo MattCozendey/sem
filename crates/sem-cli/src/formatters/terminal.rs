@@ -82,6 +82,10 @@ pub fn format_terminal(result: &DiffResult, verbose: bool) -> String {
                     "↻".cyan().to_string(),
                     "[renamed]".cyan().to_string(),
                 ),
+                ChangeType::Reordered => (
+                    "↕".magenta().to_string(),
+                    "[reordered]".magenta().to_string(),
+                ),
             };
 
             let type_label = format!("{:<10}", change.entity_type);
@@ -261,6 +265,13 @@ pub fn format_terminal(result: &DiffResult, verbose: bool) -> String {
         parts.push(
             format!("{} renamed", result.renamed_count)
                 .cyan()
+                .to_string(),
+        );
+    }
+    if result.reordered_count > 0 {
+        parts.push(
+            format!("{} reordered", result.reordered_count)
+                .magenta()
                 .to_string(),
         );
     }

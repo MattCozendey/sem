@@ -8,6 +8,7 @@ pub enum ChangeType {
     Deleted,
     Moved,
     Renamed,
+    Reordered,
 }
 
 impl std::fmt::Display for ChangeType {
@@ -18,6 +19,7 @@ impl std::fmt::Display for ChangeType {
             ChangeType::Deleted => write!(f, "deleted"),
             ChangeType::Moved => write!(f, "moved"),
             ChangeType::Renamed => write!(f, "renamed"),
+            ChangeType::Reordered => write!(f, "reordered"),
         }
     }
 }

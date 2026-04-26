@@ -27,6 +27,7 @@ pub fn format_plain(result: &DiffResult) -> String {
                 ChangeType::Deleted => "D".red().to_string(),
                 ChangeType::Renamed => "R".cyan().to_string(),
                 ChangeType::Moved => ">".blue().to_string(),
+                ChangeType::Reordered => "O".magenta().to_string(),
             };
 
             let type_label = format!("{:<12}", change.entity_type);
@@ -68,6 +69,9 @@ pub fn format_plain(result: &DiffResult) -> String {
     }
     if result.renamed_count > 0 {
         parts.push(format!("{} renamed", result.renamed_count).cyan().to_string());
+    }
+    if result.reordered_count > 0 {
+        parts.push(format!("{} reordered", result.reordered_count).magenta().to_string());
     }
 
     let files_label = if result.file_count == 1 { "file" } else { "files" };

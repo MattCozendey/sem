@@ -38,6 +38,7 @@ pub fn format_markdown(result: &DiffResult, verbose: bool) -> String {
                 }
                 ChangeType::Moved => "→",
                 ChangeType::Renamed => "↻",
+                ChangeType::Reordered => "↕",
             };
 
             let name_display = if let Some(ref old_name) = change.old_entity_name {
@@ -170,6 +171,9 @@ pub fn format_markdown(result: &DiffResult, verbose: bool) -> String {
     }
     if result.renamed_count > 0 {
         parts.push(format!("{} renamed", result.renamed_count));
+    }
+    if result.reordered_count > 0 {
+        parts.push(format!("{} reordered", result.reordered_count));
     }
 
     let files_label = if result.file_count == 1 {
