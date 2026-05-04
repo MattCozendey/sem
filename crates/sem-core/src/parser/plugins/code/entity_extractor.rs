@@ -501,37 +501,37 @@ fn find_name_byte_range(node: Node, _source: &[u8]) -> Option<(usize, usize)> {
 }
 
 /// Find the byte range of the name within a C-style declarator chain.
-fn find_declarator_name_range(node: Node) -> Option<(usize, usize)> {
-    match node.kind() {
-        "identifier" | "type_identifier" | "field_identifier" => {
-            Some((node.start_byte(), node.end_byte()))
-        }
-        "qualified_identifier" | "scoped_identifier" => {
-            Some((node.start_byte(), node.end_byte()))
-        }
-        "pointer_declarator" | "function_declarator" | "array_declarator"
-        | "parenthesized_declarator" => {
-            if let Some(inner) = node.child_by_field_name("declarator") {
-                find_declarator_name_range(inner)
-            } else {
+fn find_declarator_name_range(mut node: Node) -> Option<(usize, usize)> {
+    loop {
+        match node.kind() {
+            "identifier" | "type_identifier" | "field_identifier" => {
+                return Some((node.start_byte(), node.end_byte()));
+            }
+            "qualified_identifier" | "scoped_identifier" => {
+                return Some((node.start_byte(), node.end_byte()));
+            }
+            "pointer_declarator" | "function_declarator" | "array_declarator"
+            | "parenthesized_declarator" => {
+                if let Some(inner) = node.child_by_field_name("declarator") {
+                    node = inner;
+                    continue;
+                }
                 let mut cursor = node.walk();
-                let result = node
+                return node
                     .named_children(&mut cursor)
                     .find(|c| c.kind() == "identifier" || c.kind() == "type_identifier")
                     .map(|c| (c.start_byte(), c.end_byte()));
-                result
             }
-        }
-        _ => {
-            if let Some(name) = node.child_by_field_name("name") {
-                return Some((name.start_byte(), name.end_byte()));
+            _ => {
+                if let Some(name) = node.child_by_field_name("name") {
+                    return Some((name.start_byte(), name.end_byte()));
+                }
+                let mut cursor = node.walk();
+                return node
+                    .named_children(&mut cursor)
+                    .find(|c| c.kind() == "identifier" || c.kind() == "type_identifier")
+                    .map(|c| (c.start_byte(), c.end_byte()));
             }
-            let mut cursor = node.walk();
-            let result = node
-                .named_children(&mut cursor)
-                .find(|c| c.kind() == "identifier" || c.kind() == "type_identifier")
-                .map(|c| (c.start_byte(), c.end_byte()));
-            result
         }
     }
 }
@@ -847,38 +847,38 @@ fn should_skip_entity(
 }
 
 /// Extract the name from a C declarator (handles pointer_declarator, function_declarator, etc.)
-fn extract_declarator_name(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "identifier" | "type_identifier" | "field_identifier" => Some(node_text(node, source).to_string()),
-        "qualified_identifier" | "scoped_identifier" => {
-            // For C++ qualified names like ClassName::method, return the full qualified name
-            Some(node_text(node, source).to_string())
-        }
-        "pointer_declarator"
-        | "function_declarator"
-        | "array_declarator"
-        | "parenthesized_declarator" => {
-            if let Some(inner) = node.child_by_field_name("declarator") {
-                extract_declarator_name(inner, source)
-            } else {
+fn extract_declarator_name(mut node: Node, source: &[u8]) -> Option<String> {
+    loop {
+        match node.kind() {
+            "identifier" | "type_identifier" | "field_identifier" => return Some(node_text(node, source).to_string()),
+            "qualified_identifier" | "scoped_identifier" => {
+                // For C++ qualified names like ClassName::method, return the full qualified name
+                return Some(node_text(node, source).to_string());
+            }
+            "pointer_declarator"
+            | "function_declarator"
+            | "array_declarator"
+            | "parenthesized_declarator" => {
+                if let Some(inner) = node.child_by_field_name("declarator") {
+                    node = inner;
+                    continue;
+                }
                 let mut cursor = node.walk();
-                let result = node
+                return node
                     .named_children(&mut cursor)
                     .find(|c| c.kind() == "identifier" || c.kind() == "type_identifier")
                     .map(|c| node_text(c, source).to_string());
-                result
             }
-        }
-        _ => {
-            if let Some(name) = node.child_by_field_name("name") {
-                return Some(node_text(name, source).to_string());
+            _ => {
+                if let Some(name) = node.child_by_field_name("name") {
+                    return Some(node_text(name, source).to_string());
+                }
+                let mut cursor = node.walk();
+                return node
+                    .named_children(&mut cursor)
+                    .find(|c| c.kind() == "identifier" || c.kind() == "type_identifier")
+                    .map(|c| node_text(c, source).to_string());
             }
-            let mut cursor = node.walk();
-            let result = node
-                .named_children(&mut cursor)
-                .find(|c| c.kind() == "identifier" || c.kind() == "type_identifier")
-                .map(|c| node_text(c, source).to_string());
-            result
         }
     }
 }
@@ -984,25 +984,27 @@ fn extract_call_entity(node: Node, config: &LanguageConfig, source: &[u8]) -> Op
 
 /// Extract function name from a def/defp/defmacro/defguard argument.
 /// Handles: call (fn with params), identifier (arity-0), binary_operator (defguard when clause)
-fn extract_fn_name_from_arg(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "call" => {
-            if let Some(fn_target) = node.child_by_field_name("target") {
-                Some(node_text(fn_target, source).to_string())
-            } else {
-                let mut c = node.walk();
-                let id = node.named_children(&mut c)
-                    .find(|n| n.kind() == "identifier")?;
-                Some(node_text(id, source).to_string())
+fn extract_fn_name_from_arg(mut node: Node, source: &[u8]) -> Option<String> {
+    loop {
+        match node.kind() {
+            "call" => {
+                return if let Some(fn_target) = node.child_by_field_name("target") {
+                    Some(node_text(fn_target, source).to_string())
+                } else {
+                    let mut c = node.walk();
+                    let id = node.named_children(&mut c)
+                        .find(|n| n.kind() == "identifier")?;
+                    Some(node_text(id, source).to_string())
+                };
             }
+            "identifier" => return Some(node_text(node, source).to_string()),
+            "binary_operator" => {
+                // defguard is_positive(x) when ... -> left side has the actual call/identifier
+                node = node.child_by_field_name("left")?;
+                continue;
+            }
+            _ => return None,
         }
-        "identifier" => Some(node_text(node, source).to_string()),
-        "binary_operator" => {
-            // defguard is_positive(x) when ... -> left side has the actual call/identifier
-            let left = node.child_by_field_name("left")?;
-            extract_fn_name_from_arg(left, source)
-        }
-        _ => None,
     }
 }
 
@@ -1295,35 +1297,39 @@ fn extract_ocaml_let_binding_names(binding: Node, source: &[u8]) -> Vec<String> 
     names
 }
 
-fn collect_value_names(node: Node, source: &[u8], names: &mut Vec<String>) {
-    if node.kind() == "value_name" {
-        names.push(node_text(node, source).to_string());
-        return;
-    }
-    // Punned record field (`{ x; y }`) — field_pattern with no pattern field.
-    // The bound name is the field_name itself.
-    if node.kind() == "field_pattern" {
-        if let Some(pattern) = node.child_by_field_name("pattern") {
-            collect_value_names(pattern, source, names);
-        } else {
-            // Punned: extract the field_name from the field_path
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
-                if child.kind() == "field_path" {
-                    let mut inner = child.walk();
-                    for fc in child.named_children(&mut inner) {
-                        if fc.kind() == "field_name" {
-                            names.push(node_text(fc, source).to_string());
+fn collect_value_names(root: Node, source: &[u8], names: &mut Vec<String>) {
+    let mut worklist = vec![root];
+    while let Some(node) = worklist.pop() {
+        if node.kind() == "value_name" {
+            names.push(node_text(node, source).to_string());
+            continue;
+        }
+        // Punned record field (`{ x; y }`) — field_pattern with no pattern field.
+        // The bound name is the field_name itself.
+        if node.kind() == "field_pattern" {
+            if let Some(pattern) = node.child_by_field_name("pattern") {
+                worklist.push(pattern);
+            } else {
+                // Punned: extract the field_name from the field_path
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    if child.kind() == "field_path" {
+                        let mut inner = child.walk();
+                        for fc in child.named_children(&mut inner) {
+                            if fc.kind() == "field_name" {
+                                names.push(node_text(fc, source).to_string());
+                            }
                         }
                     }
                 }
             }
+            continue;
         }
-        return;
-    }
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        collect_value_names(child, source, names);
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.named_children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            worklist.push(child);
+        }
     }
 }
 
