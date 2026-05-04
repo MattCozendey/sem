@@ -386,9 +386,11 @@ fn ref_description(ast_ref: &AstRef) -> String {
 
 /// Build scope tree by walking the AST.
 /// Creates class scopes and maps methods to them.
+/// Uses an iterative worklist to avoid stack overflow on deeply nested ASTs.
+/// Fixes: https://github.com/Ataraxy-Labs/sem/issues/103
 fn build_scopes_from_ast(
-    node: tree_sitter::Node,
-    current_scope: usize,
+    root: tree_sitter::Node,
+    root_scope: usize,
     scopes: &mut Vec<Scope>,
     entity_scope_map: &mut HashMap<String, usize>,
     entity_inner_scope: &mut HashMap<String, usize>,
@@ -398,245 +400,202 @@ fn build_scopes_from_ast(
     source: &[u8],
     config: &ScopeResolveConfig,
 ) {
-    let kind = node.kind();
+    // Each entry: (node, current_scope)
+    let mut worklist: Vec<(tree_sitter::Node, usize)> = vec![(root, root_scope)];
 
-    // Class-like scope: config-driven
-    let is_class_like = config.class_scope_nodes.contains(&kind);
+    while let Some((node, current_scope)) = worklist.pop() {
+        let kind = node.kind();
 
-    // Impl scope: config-driven (Rust impl_item, Swift extension)
-    let is_impl = config.impl_scope_nodes.contains(&kind);
+        // Class-like scope: config-driven
+        let is_class_like = config.class_scope_nodes.contains(&kind);
 
-    if is_class_like || is_impl {
-        let class_name = if is_impl {
-            // Impl scope: extract type name from the impl node
-            node.child_by_field_name("type")
-                .and_then(|n| n.utf8_text(source).ok())
-                .unwrap_or("")
-        } else {
-            match &config.class_name_field {
-                ClassNameField::Simple(field) => {
-                    node.child_by_field_name(field)
-                        .and_then(|n| n.utf8_text(source).ok())
-                        .unwrap_or("")
-                }
-                ClassNameField::TypeSpec { spec_kind, field } => {
-                    let mut name = "";
-                    let mut cursor = node.walk();
-                    for child in node.named_children(&mut cursor) {
-                        if child.kind() == *spec_kind {
-                            name = child
-                                .child_by_field_name(field)
-                                .and_then(|n| n.utf8_text(source).ok())
-                                .unwrap_or("");
-                            break;
-                        }
-                    }
-                    name
-                }
-                ClassNameField::ImplType(field) => {
-                    node.child_by_field_name(field)
-                        .and_then(|n| n.utf8_text(source).ok())
-                        .unwrap_or("")
-                }
-            }
-        };
+        // Impl scope: config-driven (Rust impl_item, Swift extension)
+        let is_impl = config.impl_scope_nodes.contains(&kind);
 
-        let class_entity = all_entities.iter().find(|e| {
-            e.file_path == file_path
-                && e.name == class_name
-                && matches!(e.entity_type.as_str(), "class" | "struct" | "interface")
-        });
-
-        if let Some(ce) = class_entity {
-            // Check if we already have a scope for this class (e.g. struct then impl)
-            let existing_scope = entity_inner_scope.get(&ce.id).copied();
-
-            let class_scope_idx = if let Some(idx) = existing_scope {
-                idx
+        if is_class_like || is_impl {
+            let class_name = if is_impl {
+                node.child_by_field_name("type")
+                    .and_then(|n| n.utf8_text(source).ok())
+                    .unwrap_or("")
             } else {
-                let idx = scopes.len();
+                match &config.class_name_field {
+                    ClassNameField::Simple(field) => {
+                        node.child_by_field_name(field)
+                            .and_then(|n| n.utf8_text(source).ok())
+                            .unwrap_or("")
+                    }
+                    ClassNameField::TypeSpec { spec_kind, field } => {
+                        let mut name = "";
+                        let mut cursor = node.walk();
+                        for child in node.named_children(&mut cursor) {
+                            if child.kind() == *spec_kind {
+                                name = child
+                                    .child_by_field_name(field)
+                                    .and_then(|n| n.utf8_text(source).ok())
+                                    .unwrap_or("");
+                                break;
+                            }
+                        }
+                        name
+                    }
+                    ClassNameField::ImplType(field) => {
+                        node.child_by_field_name(field)
+                            .and_then(|n| n.utf8_text(source).ok())
+                            .unwrap_or("")
+                    }
+                }
+            };
+
+            let class_entity = all_entities.iter().find(|e| {
+                e.file_path == file_path
+                    && e.name == class_name
+                    && matches!(e.entity_type.as_str(), "class" | "struct" | "interface")
+            });
+
+            if let Some(ce) = class_entity {
+                let existing_scope = entity_inner_scope.get(&ce.id).copied();
+
+                let class_scope_idx = if let Some(idx) = existing_scope {
+                    idx
+                } else {
+                    let idx = scopes.len();
+                    scopes.push(Scope {
+                        parent: Some(current_scope),
+                        defs: HashMap::new(),
+                        types: HashMap::new(),
+                        pending_call_types: HashMap::new(),
+                        owner_id: Some(ce.id.clone()),
+                        kind: "class",
+                    });
+                    entity_scope_map.insert(ce.id.clone(), current_scope);
+                    entity_inner_scope.insert(ce.id.clone(), idx);
+                    idx
+                };
+
+                for entity in all_entities {
+                    if entity.parent_id.as_ref() == Some(&ce.id) {
+                        scopes[class_scope_idx]
+                            .defs
+                            .insert(entity.name.clone(), entity.id.clone());
+                        entity_scope_map.insert(entity.id.clone(), class_scope_idx);
+                    }
+                }
+
+                let mut cursor = node.walk();
+                let children: Vec<_> = node.named_children(&mut cursor).collect();
+                for child in children.into_iter().rev() {
+                    worklist.push((child, class_scope_idx));
+                }
+                continue;
+            } else if !is_impl {
+                let class_scope_idx = scopes.len();
                 scopes.push(Scope {
                     parent: Some(current_scope),
                     defs: HashMap::new(),
                     types: HashMap::new(),
                     pending_call_types: HashMap::new(),
-                    owner_id: Some(ce.id.clone()),
+                    owner_id: None,
                     kind: "class",
                 });
-                entity_scope_map.insert(ce.id.clone(), current_scope);
-                entity_inner_scope.insert(ce.id.clone(), idx);
-                idx
+                let mut cursor = node.walk();
+                let children: Vec<_> = node.named_children(&mut cursor).collect();
+                for child in children.into_iter().rev() {
+                    worklist.push((child, class_scope_idx));
+                }
+                continue;
+            }
+        }
+
+        // Function-like scope: config-driven
+        let is_function_like = config.function_scope_nodes.contains(&kind);
+
+        if is_function_like {
+            let func_name = node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("");
+
+            let parent_scope = if config.external_method && kind == "method_declaration" {
+                let receiver_type = node.utf8_text(source).ok()
+                    .and_then(|t| extract_go_receiver_type(t));
+                if let Some(ref struct_name) = receiver_type {
+                    let found = scopes.iter().enumerate().find(|(_, s)| {
+                        s.kind == "class" && s.owner_id.as_ref().map_or(false, |oid| {
+                            entity_map.get(oid).map_or(false, |e| e.name == *struct_name)
+                        })
+                    });
+                    found.map(|(idx, _)| idx).unwrap_or(current_scope)
+                } else {
+                    current_scope
+                }
+            } else {
+                current_scope
             };
 
-            // Register all child entities as defs in the class scope
-            for entity in all_entities {
-                if entity.parent_id.as_ref() == Some(&ce.id) {
-                    scopes[class_scope_idx]
-                        .defs
-                        .insert(entity.name.clone(), entity.id.clone());
-                    entity_scope_map.insert(entity.id.clone(), class_scope_idx);
-                }
-            }
-
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
-                build_scopes_from_ast(
-                    child,
-                    class_scope_idx,
-                    scopes,
-                    entity_scope_map,
-                    entity_inner_scope,
-                    all_entities,
-                    entity_map,
-                    file_path,
-                    source,
-                    config,
-                );
-            }
-            return;
-        } else if !is_impl {
-            // No matching entity, still recurse with a scope
-            let class_scope_idx = scopes.len();
+            let func_scope_idx = scopes.len();
             scopes.push(Scope {
-                parent: Some(current_scope),
+                parent: Some(parent_scope),
                 defs: HashMap::new(),
                 types: HashMap::new(),
                 pending_call_types: HashMap::new(),
                 owner_id: None,
-                kind: "class",
+                kind: "function",
             });
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
-                build_scopes_from_ast(
-                    child,
-                    class_scope_idx,
-                    scopes,
-                    entity_scope_map,
-                    entity_inner_scope,
-                    all_entities,
-                    entity_map,
-                    file_path,
-                    source,
-                    config,
-                );
+
+            let func_entity = all_entities.iter().find(|e| {
+                e.file_path == file_path && e.name == func_name && {
+                    let line = node.start_position().row + 1;
+                    e.start_line <= line && line <= e.end_line
+                }
+            });
+
+            if let Some(fe) = func_entity {
+                scopes[func_scope_idx].owner_id = Some(fe.id.clone());
+                entity_scope_map.entry(fe.id.clone()).or_insert(parent_scope);
+                entity_inner_scope.insert(fe.id.clone(), func_scope_idx);
+                if config.external_method && kind == "method_declaration" && parent_scope != current_scope {
+                    scopes[parent_scope].defs.insert(fe.name.clone(), fe.id.clone());
+                }
             }
-            return;
-        }
-    }
 
-    // Function-like scope: config-driven
-    let is_function_like = config.function_scope_nodes.contains(&kind);
+            scan_assignments(node, func_scope_idx, scopes, source, config);
+            scan_function_params(node, func_scope_idx, scopes, source, config);
 
-    if is_function_like {
-        let func_name = node.child_by_field_name("name")
-            .and_then(|n| n.utf8_text(source).ok())
-            .unwrap_or("");
-
-        // External method (Go): place inside the receiver's struct scope
-        let parent_scope = if config.external_method && kind == "method_declaration" {
-            let receiver_type = node.utf8_text(source).ok()
-                .and_then(|t| extract_go_receiver_type(t));
-            if let Some(ref struct_name) = receiver_type {
-                let found = scopes.iter().enumerate().find(|(_, s)| {
-                    s.kind == "class" && s.owner_id.as_ref().map_or(false, |oid| {
-                        entity_map.get(oid).map_or(false, |e| e.name == *struct_name)
-                    })
-                });
-                found.map(|(idx, _)| idx).unwrap_or(current_scope)
-            } else {
-                current_scope
-            }
-        } else {
-            current_scope
-        };
-
-        let func_scope_idx = scopes.len();
-        scopes.push(Scope {
-            parent: Some(parent_scope),
-            defs: HashMap::new(),
-            types: HashMap::new(),
-            pending_call_types: HashMap::new(),
-            owner_id: None,
-            kind: "function",
-        });
-
-        let func_entity = all_entities.iter().find(|e| {
-            e.file_path == file_path && e.name == func_name && {
-                let line = node.start_position().row + 1;
-                e.start_line <= line && line <= e.end_line
-            }
-        });
-
-        if let Some(fe) = func_entity {
-            scopes[func_scope_idx].owner_id = Some(fe.id.clone());
-            entity_scope_map.entry(fe.id.clone()).or_insert(parent_scope);
-            entity_inner_scope.insert(fe.id.clone(), func_scope_idx);
-            // For external methods, also register in the struct's class scope defs
-            if config.external_method && kind == "method_declaration" && parent_scope != current_scope {
-                scopes[parent_scope].defs.insert(fe.name.clone(), fe.id.clone());
-            }
-        }
-
-        scan_assignments(node, func_scope_idx, scopes, source, config);
-        scan_function_params(node, func_scope_idx, scopes, source, config);
-
-        // External method: add receiver parameter type binding
-        // func (t *Transaction) Execute(...) -> types["t"] = "Transaction"
-        if config.external_method && kind == "method_declaration" {
-            if let Some(receiver) = node.child_by_field_name("receiver") {
-                let mut rcursor = receiver.walk();
-                for param in receiver.named_children(&mut rcursor) {
-                    if param.kind() == "parameter_declaration" {
-                        let param_name = param
-                            .child_by_field_name("name")
-                            .and_then(|n| n.utf8_text(source).ok())
-                            .unwrap_or("");
-                        let param_type = param
-                            .child_by_field_name("type")
-                            .map(|n| extract_base_type(n, source))
-                            .unwrap_or_default();
-                        if !param_name.is_empty() && !param_type.is_empty() {
-                            scopes[func_scope_idx]
-                                .types
-                                .insert(param_name.to_string(), param_type);
+            if config.external_method && kind == "method_declaration" {
+                if let Some(receiver) = node.child_by_field_name("receiver") {
+                    let mut rcursor = receiver.walk();
+                    for param in receiver.named_children(&mut rcursor) {
+                        if param.kind() == "parameter_declaration" {
+                            let param_name = param
+                                .child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(source).ok())
+                                .unwrap_or("");
+                            let param_type = param
+                                .child_by_field_name("type")
+                                .map(|n| extract_base_type(n, source))
+                                .unwrap_or_default();
+                            if !param_name.is_empty() && !param_type.is_empty() {
+                                scopes[func_scope_idx]
+                                    .types
+                                    .insert(param_name.to_string(), param_type);
+                            }
                         }
                     }
                 }
             }
+
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.named_children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
+                worklist.push((child, func_scope_idx));
+            }
+            continue;
         }
 
         let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            build_scopes_from_ast(
-                child,
-                func_scope_idx,
-                scopes,
-                entity_scope_map,
-                entity_inner_scope,
-                all_entities,
-                entity_map,
-                file_path,
-                source,
-                config,
-            );
+        let children: Vec<_> = node.named_children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            worklist.push((child, current_scope));
         }
-        return;
-    }
-
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        build_scopes_from_ast(
-            child,
-            current_scope,
-            scopes,
-            entity_scope_map,
-            entity_inner_scope,
-            all_entities,
-            entity_map,
-            file_path,
-            source,
-            config,
-        );
     }
 }
 
